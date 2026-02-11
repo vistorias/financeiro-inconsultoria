@@ -35,8 +35,7 @@ import numpy as np
 import pandas as pd
 import altair as alt
 
-import gspread
-from oauth2client.service_account import ServiceAccountCredentials
+from google.oauth2.service_account import Credentials
 
 # ====================== BRANDING / SECRETS ======================
 COMPANY_NAME = st.secrets.get("company_name", "Dashboard Financeiro")
@@ -195,13 +194,20 @@ def _load_sa_info() -> dict:
 
 @st.cache_resource(show_spinner=False)
 def make_client():
+    # Import aqui para deixar o erro mais claro se a lib não instalar no Streamlit Cloud
+    try:
+        import gspread  # noqa
+    except Exception as e:
+        st.error("Dependência ausente: gspread. Verifique o requirements.txt e refaça o deploy.")
+        st.exception(e)
+        st.stop()
+
     info = _load_sa_info()
     scopes = [
-        "https://spreadsheets.google.com/feeds",
         "https://www.googleapis.com/auth/spreadsheets",
         "https://www.googleapis.com/auth/drive",
     ]
-    creds = ServiceAccountCredentials.from_json_keyfile_dict(info, scopes)
+    creds = Credentials.from_service_account_info(info, scopes=scopes)
     return gspread.authorize(creds)
 
 client = make_client()
