@@ -104,6 +104,19 @@ div[data-testid="stMultiSelect"] > div{
   border-color: var(--line) !important;
 }
 div[data-testid="stMultiSelect"] span{ color: var(--txt) !important; }
+
+/* inputs (selectbox, multiselect, date input) - remove transparência */
+div[data-baseweb="select"] > div{background:var(--panel)!important;border:1px solid var(--line)!important;}
+div[data-baseweb="select"] span{color:var(--txt)!important;}
+div[data-baseweb="select"] svg{color:var(--mut)!important;}
+div[data-baseweb="input"] > div{background:var(--panel)!important;border:1px solid var(--line)!important;}
+div[data-baseweb="input"] input{color:var(--txt)!important;}
+/* dropdown menu */
+ul[role="listbox"]{background:var(--panel)!important;}
+ul[role="listbox"] *{color:var(--txt)!important;}
+/* date picker popup */
+div[data-baseweb="popover"] > div{background:var(--panel)!important;border:1px solid var(--line)!important;}
+
 </style>
 """,
     unsafe_allow_html=True,
@@ -191,8 +204,17 @@ def month_label(ym: str) -> str:
         return ym
     return f"{ym[5:7]}/{ym[:4]}"
 
-def to_ym(d: date) -> str:
-    return f"{d.year}-{d.month:02d}"
+def to_ym(d) -> str | None:
+    """Converte qualquer valor (date/datetime/Timestamp/str/serial) para 'YYYY-MM'."""
+    if d is None or (isinstance(d, float) and pd.isna(d)):
+        return None
+    try:
+        dt = pd.to_datetime(d, errors="coerce", dayfirst=True)
+    except Exception:
+        return None
+    if pd.isna(dt):
+        return None
+    return dt.strftime("%Y-%m")
 
 def safe_cols(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
@@ -348,7 +370,7 @@ def normalize_entradas(df: pd.DataFrame) -> pd.DataFrame:
     dist_cols = [c for c in df.columns if c.startswith("R$") and c != col_val]
 
     df["_DATA"] = df[col_data].apply(parse_date_any) if col_data else pd.NaT
-    df["YM"] = df["_DATA"].apply(lambda d: to_ym(d) if isinstance(d, date) else None)
+    df["YM"] = df["_DATA"].apply(to_ym)
 
     df["CAPTACAO"] = df[col_capt].astype(str).map(_upper) if col_capt else ""
     df["MEIO"]     = df[col_meio].astype(str).map(_upper) if col_meio else ""
@@ -438,7 +460,7 @@ def normalize_saidas(df: pd.DataFrame) -> pd.DataFrame:
     df["_VENC"] = df[col_venc].apply(parse_date_any) if col_venc else pd.NaT
     df["_PAG"]  = df[col_pag].apply(parse_date_any) if col_pag else pd.NaT
     df["DATA_REF"] = df["_PAG"].where(df["_PAG"].notna(), df["_VENC"])
-    df["YM"] = df["DATA_REF"].apply(lambda d: to_ym(d) if isinstance(d, date) else None)
+    df["YM"] = df["DATA_REF"].apply(to_ym)
 
     df["CONTA"]     = df[col_cont].astype(str).map(_upper) if col_cont else ""
     df["BANCO"]     = df[col_banc].astype(str).map(_upper) if col_banc else ""
@@ -467,7 +489,7 @@ def normalize_transferencias(df: pd.DataFrame) -> pd.DataFrame:
         col_val = cands[0] if cands else None
 
     df["DATA"] = df[col_data].apply(parse_date_any) if col_data else pd.NaT
-    df["YM"] = df["DATA"].apply(lambda d: to_ym(d) if isinstance(d, date) else None)
+    df["YM"] = df["DATA"].apply(to_ym)
 
     df["ORIGEM"]  = df[col_or].astype(str).map(_upper) if col_or else ""
     df["DESTINO"] = df[col_de].astype(str).map(_upper) if col_de else ""
@@ -483,7 +505,7 @@ def compute_fluxo_caixa(df_ent: pd.DataFrame, df_sai: pd.DataFrame) -> pd.DataFr
     base = ent_day.merge(sai_day, on="DATA", how="outer").fillna(0.0)
     base["SALDO_DIA"] = base["ENTRADAS"] - base["SAIDAS"]
     base = base.sort_values("DATA")
-    base["YM"] = base["DATA"].apply(lambda d: to_ym(d) if isinstance(d, date) else None)
+    base["YM"] = base["DATA"].apply(to_ym)
     return base
 
 
