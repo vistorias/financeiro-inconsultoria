@@ -2,23 +2,17 @@
 """
 Dashboard Financeiro — Streamlit (Google Sheets) — versão SaaS (single-file)
 
-Leitura das abas (mesmos nomes do Excel/Sheets):
-- 1. Saldo Inicial (opcional)
+Abas (nomes iguais ao Excel/Sheets):
 - 4. Entradas
 - 5. Saídas
 - 6. Transferencias
-- 7. Conciliação (opcional)
 
 Secrets (Streamlit Cloud -> App -> Settings -> Secrets):
-- company_name = "..."
-- finance_sheet_id = "ID ou link"   (aceita também: sheet_id)
-- logo_url = "https://..."          (opcional)
-- [gcp_service_account] ...         (json inline ou json_path)
-
-Observação crítica:
-- st.set_page_config() precisa ser o PRIMEIRO comando Streamlit do arquivo.
+- company_name = "In Consultoria"         (opcional)
+- finance_sheet_id = "ID ou link"         (obrigatório)
+- logo_url = "https://..."                (opcional)
+- [gcp_service_account] ...               (obrigatório)
 """
-
 # ====================== STREAMLIT CONFIG (DEVE SER O PRIMEIRO) ======================
 import streamlit as st
 st.set_page_config(page_title="Dashboard Financeiro", layout="wide")
@@ -35,6 +29,7 @@ import numpy as np
 import pandas as pd
 import altair as alt
 
+import gspread
 from google.oauth2.service_account import Credentials
 
 # ====================== BRANDING / SECRETS ======================
@@ -49,14 +44,14 @@ st.markdown(
   --bg:#0b1220;--panel:#0f1729;--card:#111c33;--card2:#0f1729;
   --txt:#e8eefc;--mut:#9db0d5;--line:#1f2b45;
   --good:#23c55e;--bad:#ef4444;--warn:#f59e0b;--info:#3b82f6;
+  --ctl:#0f1729; --ctl2:#0b1220;
 }
 html, body, [data-testid="stAppViewContainer"]{background:var(--bg)!important;}
-.block-container{padding-top:1.2rem; padding-bottom:2rem;}
+.block-container{padding-top:1.2rem; padding-bottom:2rem; max-width: 1500px;}
 h1,h2,h3,h4{color:var(--txt)!important;}
 p,li,span,div,label{color:var(--txt);}
 .small{color:var(--mut);font-size:12px;}
 .hr{height:1px;background:var(--line);margin:10px 0 18px;}
-/* cards */
 .kpi{background:linear-gradient(180deg,var(--card),var(--card2));border:1px solid var(--line);border-radius:14px;
      padding:14px 16px;min-width:220px;box-shadow:0 4px 24px rgba(0,0,0,.25);}
 .kpi .t{font-weight:800;color:var(--mut);font-size:12px;text-transform:uppercase;letter-spacing:.04em}
@@ -70,53 +65,34 @@ p,li,span,div,label{color:var(--txt);}
 .panel{background:linear-gradient(180deg,var(--card),var(--panel));border:1px solid var(--line);border-radius:14px;
        padding:14px 16px;margin-top:10px;}
 .section-title{margin:2px 0 10px;font-weight:900;font-size:15px;color:var(--txt)}
-/* sidebar */
 [data-testid="stSidebar"]{background:#0a1020;border-right:1px solid var(--line);}
 [data-testid="stSidebar"] *{color:var(--txt)!important;}
-/* table */
-[data-testid="stDataFrame"]{border:1px solid var(--line);border-radius:12px;overflow:hidden;}
 
-/* ====== FIX: FUNDO DOS FILTROS (SELECT/DATE/MULTISELECT) ====== */
-div[data-baseweb="select"] > div{
-  background: var(--panel) !important;
+/* --- FIX: inputs não ficarem transparentes --- */
+[data-baseweb="select"] > div{
+  background: var(--ctl) !important;
   border-color: var(--line) !important;
 }
-div[data-baseweb="select"] span{ color: var(--txt) !important; }
-div[data-baseweb="popover"]{
-  background: var(--panel) !important;
-  border: 1px solid var(--line) !important;
+[data-baseweb="input"] > div{
+  background: var(--ctl) !important;
+  border-color: var(--line) !important;
 }
-div[data-baseweb="menu"]{
-  background: var(--panel) !important;
-}
-div[data-baseweb="menu"] *{
-  color: var(--txt) !important;
-}
-div[data-testid="stDateInput"] > div{
-  background: var(--panel) !important;
-  border-radius: 10px !important;
+[data-baseweb="popover"]{
+  background: var(--ctl) !important;
 }
 div[data-testid="stDateInput"] input{
+  background: var(--ctl) !important;
+  border-color: var(--line) !important;
   color: var(--txt) !important;
 }
-div[data-testid="stMultiSelect"] > div{
-  background: var(--panel) !important;
+div[data-testid="stMultiSelect"] div[role="combobox"]{
+  background: var(--ctl) !important;
   border-color: var(--line) !important;
 }
-div[data-testid="stMultiSelect"] span{ color: var(--txt) !important; }
-
-/* inputs (selectbox, multiselect, date input) - remove transparência */
-div[data-baseweb="select"] > div{background:var(--panel)!important;border:1px solid var(--line)!important;}
-div[data-baseweb="select"] span{color:var(--txt)!important;}
-div[data-baseweb="select"] svg{color:var(--mut)!important;}
-div[data-baseweb="input"] > div{background:var(--panel)!important;border:1px solid var(--line)!important;}
-div[data-baseweb="input"] input{color:var(--txt)!important;}
-/* dropdown menu */
-ul[role="listbox"]{background:var(--panel)!important;}
-ul[role="listbox"] *{color:var(--txt)!important;}
-/* date picker popup */
-div[data-baseweb="popover"] > div{background:var(--panel)!important;border:1px solid var(--line)!important;}
-
+div[data-testid="stSelectbox"] div[role="combobox"]{
+  background: var(--ctl) !important;
+  border-color: var(--line) !important;
+}
 </style>
 """,
     unsafe_allow_html=True,
@@ -164,10 +140,19 @@ def _upper(x):
 def parse_date_any(x):
     if pd.isna(x) or x == "":
         return pd.NaT
-    if isinstance(x, (datetime, date)):
-        return x.date() if isinstance(x, datetime) else x
+    if isinstance(x, datetime):
+        return x.date()
+    if isinstance(x, date):
+        return x
+    # números (às vezes o Sheets vem como serial)
+    if isinstance(x, (int, float, np.number)):
+        try:
+            dt = pd.to_datetime(float(x), unit="D", origin="1899-12-30", errors="coerce")
+            return dt.date() if pd.notna(dt) else pd.NaT
+        except Exception:
+            return pd.NaT
     s = str(x).strip()
-    for fmt in ("%d/%m/%Y", "%Y-%m-%d", "%d-%m-%Y"):
+    for fmt in ("%d/%m/%Y", "%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y %H:%M:%S", "%d/%m/%Y %H:%M"):
         try:
             return datetime.strptime(s, fmt).date()
         except Exception:
@@ -204,300 +189,196 @@ def month_label(ym: str) -> str:
         return ym
     return f"{ym[5:7]}/{ym[:4]}"
 
-def to_ym(d) -> str | None:
-    """Converte qualquer valor (date/datetime/Timestamp/str/serial) para 'YYYY-MM'."""
-    if d is None or (isinstance(d, float) and pd.isna(d)):
+def to_ym(d) -> Optional[str]:
+    """Aceita date/datetime/Timestamp; retorna YYYY-MM (ou None)."""
+    if d is None or pd.isna(d):
         return None
     try:
-        dt = pd.to_datetime(d, errors="coerce", dayfirst=True)
+        y = int(getattr(d, "year"))
+        m = int(getattr(d, "month"))
+        if m < 1 or m > 12:
+            return None
+        return f"{y}-{m:02d}"
     except Exception:
         return None
-    if pd.isna(dt):
-        return None
-    return dt.strftime("%Y-%m")
 
-def safe_cols(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
-    df.columns = [str(c).strip() for c in df.columns]
-    return df
+def pick_col(cols_norm: List[str], *names: str) -> Optional[str]:
+    for n in names:
+        if n in cols_norm:
+            return n
+    return None
 
 # ====================== GOOGLE SHEETS CLIENT ======================
 def _load_sa_info() -> dict:
     try:
         block = st.secrets["gcp_service_account"]
     except Exception:
-        st.error("Não encontrei [gcp_service_account] no Secrets.")
+        st.error("Não encontrei [gcp_service_account] no Secrets do Streamlit.")
         st.stop()
-
     if isinstance(block, dict) and "json_path" in block:
         path = block["json_path"]
         if not os.path.isabs(path):
             path = os.path.join(os.path.dirname(__file__), path)
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception as e:
-            st.error(f"Não consegui abrir o JSON da service account: {path}")
-            st.exception(e)
-            st.stop()
-
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
     return dict(block)
 
 @st.cache_resource(show_spinner=False)
 def make_client():
-    # Import aqui para deixar o erro mais claro se a lib não instalar no Streamlit Cloud
-    try:
-        import gspread  # noqa
-    except Exception as e:
-        st.error("Dependência ausente: gspread. Verifique o requirements.txt e refaça o deploy.")
-        st.exception(e)
-        st.stop()
-
     info = _load_sa_info()
-    scopes = [
-        "https://www.googleapis.com/auth/spreadsheets",
-        "https://www.googleapis.com/auth/drive",
-    ]
-    creds = Credentials.from_service_account_info(info, scopes=scopes)
+    creds = Credentials.from_service_account_info(
+        info,
+        scopes=[
+            "https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/drive.readonly",
+        ],
+    )
     return gspread.authorize(creds)
 
 client = make_client()
 
 SHEET_ID = _sheet_id(st.secrets.get("finance_sheet_id", "") or st.secrets.get("sheet_id", ""))
 if not SHEET_ID:
-    st.error("Faltou `finance_sheet_id` (ou `sheet_id`) no Secrets. Pode colar o LINK ou o ID.")
+    st.error("Faltou `finance_sheet_id` (ou `sheet_id`) no Secrets. Cole o LINK ou o ID.")
     st.stop()
 
-TAB_ENT   = "4. Entradas"
-TAB_SAI   = "5. Saídas"
-TAB_TRF   = "6. Transferencias"
+TAB_ENT = "4. Entradas"
+TAB_SAI = "5. Saídas"
+TAB_TRF = "6. Transferencias"
 
 @st.cache_data(ttl=300, show_spinner=False)
 def read_tab(sheet_id: str, tab: str) -> pd.DataFrame:
-    """Lê uma aba do Google Sheets de forma robusta.
-
-    Motivo: ws.get_all_records() costuma falhar quando:
-    - cabeçalho tem colunas vazias/duplicadas
-    - existem células mescladas
-    - existem linhas em branco antes do cabeçalho
-    - há linhas com tamanhos diferentes
-
-    Estratégia:
-    - lê tudo com get_all_values()
-    - encontra a primeira linha não-vazia para ser o cabeçalho
-    - normaliza/torna único o nome das colunas
-    - monta o DataFrame com todas as linhas abaixo do cabeçalho
-    """
+    """Leitura robusta (evita erros do get_all_records quando há cabeçalhos duplicados/vazios)."""
     sh = client.open_by_key(sheet_id)
     ws = sh.worksheet(tab)
-
     values = ws.get_all_values()
-    if not values:
+    if not values or len(values) < 2:
         return pd.DataFrame()
-
-    # remove linhas totalmente vazias no fim
-    while values and all(str(c).strip() == "" for c in values[-1]):
-        values.pop()
-
-    # encontra a primeira linha não-vazia (cabeçalho)
-    header_idx = None
-    for i, row in enumerate(values):
-        if any(str(c).strip() != "" for c in row):
-            header_idx = i
-            break
-    if header_idx is None:
-        return pd.DataFrame()
-
-    header = values[header_idx]
-    data_rows = values[header_idx + 1 :]
-
-    # normaliza cabeçalho: preenche vazios e garante unicidade
-    cols = []
-    seen = {}
-    for j, h in enumerate(header):
-        name = str(h).strip()
-        if name == "":
-            name = f"COL_{j+1}"
-        # mantém como está (não norm aqui, para preservar nomes originais no dataframe bruto)
-        base = name
-        if base in seen:
-            seen[base] += 1
-            name = f"{base}_{seen[base]}"
-        else:
-            seen[base] = 1
-        cols.append(name)
-
-    # garante que todas as linhas tenham o mesmo tamanho do header
-    n = len(cols)
-    norm_rows = []
-    for r in data_rows:
-        if len(r) < n:
-            r = r + [""] * (n - len(r))
-        elif len(r) > n:
-            r = r[:n]
-        norm_rows.append(r)
-
-    df = pd.DataFrame(norm_rows, columns=cols)
-
+    header = [h.strip() for h in values[0]]
+    rows = values[1:]
+    df = pd.DataFrame(rows, columns=header)
+    # remove colunas vazias
+    df = df.loc[:, [c for c in df.columns if str(c).strip() != ""]]
     # remove linhas totalmente vazias
-    df = df.loc[~(df.apply(lambda x: all(str(v).strip()=="" for v in x), axis=1))].copy()
+    df = df.replace("", np.nan)
+    df = df.dropna(how="all").fillna("")
+    return df
 
-    return safe_cols(df)
-
-# ====================== NORMALIZERS ======================
+# ====================== NORMALIZERS (COMPATÍVEL COM SEU EXCEL) ======================
 def normalize_entradas(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return df
+
     df = df.copy()
-    df.columns = [_norm_col(c) for c in df.columns]
+    cols_norm = [_norm_col(c) for c in df.columns]
+    df.columns = cols_norm
 
-    col_data = "DATA" if "DATA" in df.columns else None
-    col_capt = "CAPTACAO" if "CAPTACAO" in df.columns else None
-    col_meio = "MEIO" if "MEIO" in df.columns else None
-    col_area = "AREA" if "AREA" in df.columns else None
-    col_prod = "PRODUTO" if "PRODUTO" in df.columns else None
+    c_data = pick_col(cols_norm, "DATA RECEBIMENTO", "DATA", "RECEBIMENTO")
+    c_venc = pick_col(cols_norm, "DATA VENCIMENTO", "VENCIMENTO")
+    c_val  = pick_col(cols_norm, "VALOR", "R$ ENTRADA", "R$ENTRADA")
 
-    col_val = None
-    if "R$ ENTRADA" in df.columns:
-        col_val = "R$ ENTRADA"
-    else:
-        cands = [c for c in df.columns if ("ENTRADA" in c and "R$" in c)]
-        if cands:
-            col_val = cands[0]
-        elif "VALOR" in df.columns:
-            col_val = "VALOR"
+    # dimensões
+    c_cliente = pick_col(cols_norm, "CLIENTE", "CLIENTES")
+    c_plano   = pick_col(cols_norm, "PLANO DE CONTAS", "PLANO DE CONTA", "CONTA")
+    c_desc    = pick_col(cols_norm, "DESCRICAO", "DESCRIÇÃO", "HISTORICO", "HISTÓRICO", "OBS", "OBSERVACAO", "OBSERVAÇÃO")
+    c_meio    = pick_col(cols_norm, "MEIO")
+    c_area    = pick_col(cols_norm, "AREA")
+    c_prod    = pick_col(cols_norm, "PRODUTO")
+    c_capt    = pick_col(cols_norm, "CAPTACAO", "CAPTAÇÃO")
+    c_banco   = pick_col(cols_norm, "BANCO")
 
-    dist_cols = [c for c in df.columns if c.startswith("R$") and c != col_val]
+    df["DATA"] = df[c_data].apply(parse_date_any) if c_data else pd.NaT
+    df["VENCIMENTO"] = df[c_venc].apply(parse_date_any) if c_venc else pd.NaT
+    df["VALOR"] = df[c_val].apply(money_to_float) if c_val else 0.0
 
-    df["_DATA"] = df[col_data].apply(parse_date_any) if col_data else pd.NaT
-    df["YM"] = df["_DATA"].apply(to_ym)
+    df["CLIENTE"] = df[c_cliente].astype(str).map(_upper) if c_cliente else ""
+    df["PLANO_CONTAS"] = df[c_plano].astype(str).map(_upper) if c_plano else ""
+    df["DESCRICAO"] = df[c_desc].astype(str) if c_desc else ""
+    df["MEIO"] = df[c_meio].astype(str).map(_upper) if c_meio else ""
+    df["AREA"] = df[c_area].astype(str).map(_upper) if c_area else ""
+    df["PRODUTO"] = df[c_prod].astype(str).map(_upper) if c_prod else ""
+    df["CAPTACAO"] = df[c_capt].astype(str).map(_upper) if c_capt else ""
+    df["BANCO"] = df[c_banco].astype(str).map(_upper) if c_banco else ""
 
-    df["CAPTACAO"] = df[col_capt].astype(str).map(_upper) if col_capt else ""
-    df["MEIO"]     = df[col_meio].astype(str).map(_upper) if col_meio else ""
-    df["AREA"]     = df[col_area].astype(str).map(_upper) if col_area else ""
-    df["PRODUTO"]  = df[col_prod].astype(str).map(_upper) if col_prod else ""
-    df["VALOR"]    = df[col_val].apply(money_to_float) if col_val else 0.0
+    if (df["CAPTACAO"] == "").all():
+        df["CAPTACAO"] = df["CLIENTE"]
 
-    for c in dist_cols:
-        df[c] = df[c].apply(money_to_float)
+    df["YM"] = df["DATA"].apply(to_ym)
 
-    df = df[df["_DATA"].notna()].copy()
+    df = df[df["DATA"].notna()].copy()
     df = df[df["VALOR"] != 0].copy()
 
-    keep_extra = [c for c in df.columns if c not in {"_DATA","YM","CAPTACAO","MEIO","AREA","PRODUTO","VALOR"}]
-    base = df[["_DATA","YM","CAPTACAO","MEIO","AREA","PRODUTO","VALOR"] + dist_cols + keep_extra].copy()
-    base = base.rename(columns={"_DATA":"DATA"})
-    return base
-
-
-def compute_pag_x_venc(df_sai: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Retorna (serie_diaria, resumo_mensal) de pagamentos vs vencimentos com base em 5. Saídas."""
-    if df_sai.empty:
-        cols_d = ["DATA","PAGAMENTOS","VENCIMENTOS"]
-        cols_m = ["YM","PAGAMENTOS","VENCIMENTOS"]
-        return pd.DataFrame(columns=cols_d), pd.DataFrame(columns=cols_m)
-
-    tmp = df_sai.copy()
-    tmp["VENC"] = tmp.get("VENCIMENTO", pd.NaT)
-    tmp["PAG"] = tmp.get("PAGAMENTO", pd.NaT)
-
-    pag_d = tmp.dropna(subset=["PAG"]).groupby("PAG")["VALOR"].sum().reset_index().rename(columns={"PAG":"DATA","VALOR":"PAGAMENTOS"})
-    venc_d = tmp.dropna(subset=["VENC"]).groupby("VENC")["VALOR"].sum().reset_index().rename(columns={"VENC":"DATA","VALOR":"VENCIMENTOS"})
-    serie = pag_d.merge(venc_d, on="DATA", how="outer").fillna(0.0).sort_values("DATA")
-
-    pag_m = tmp.dropna(subset=["PAG"]).groupby(tmp["PAG"].apply(to_ym))["VALOR"].sum().reset_index()
-    pag_m.columns = ["YM","PAGAMENTOS"]
-    venc_m = tmp.dropna(subset=["VENC"]).groupby(tmp["VENC"].apply(to_ym))["VALOR"].sum().reset_index()
-    venc_m.columns = ["YM","VENCIMENTOS"]
-    mens = pag_m.merge(venc_m, on="YM", how="outer").fillna(0.0).sort_values("YM")
-
-    return serie, mens
-
-def status_pagamento(df_sai: pd.DataFrame) -> pd.DataFrame:
-    """Marca status para análise: ABERTO / VENCIDO / PAGO / PAGO_EM_ATRASO."""
-    if df_sai.empty:
-        return df_sai
-    out = df_sai.copy()
-    hoje = date.today()
-
-    venc = out.get("VENCIMENTO", pd.NaT)
-    pag = out.get("PAGAMENTO", pd.NaT)
-
-    aberto = pag.isna()
-    vencido = aberto & venc.notna() & (venc < hoje)
-    pago = pag.notna()
-    pago_atraso = pago & venc.notna() & (pag > venc)
-
-    out["STATUS"] = "ABERTO"
-    out.loc[vencido, "STATUS"] = "VENCIDO"
-    out.loc[pago, "STATUS"] = "PAGO"
-    out.loc[pago_atraso, "STATUS"] = "PAGO_EM_ATRASO"
-    return out
+    keep = ["DATA", "YM", "VENCIMENTO", "CAPTACAO", "CLIENTE", "PLANO_CONTAS", "BANCO", "MEIO", "AREA", "PRODUTO", "DESCRICAO", "VALOR"]
+    keep = [c for c in keep if c in df.columns]
+    return df[keep].copy()
 
 def normalize_saidas(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return df
+
     df = df.copy()
-    df.columns = [_norm_col(c) for c in df.columns]
+    cols_norm = [_norm_col(c) for c in df.columns]
+    df.columns = cols_norm
 
-    col_venc = "VENCIMENTO" if "VENCIMENTO" in df.columns else None
-    col_pag  = "PAGAMENTO" if "PAGAMENTO" in df.columns else None
-    col_cont = "CONTA" if "CONTA" in df.columns else None
-    col_banc = "BANCO" if "BANCO" in df.columns else None
-    col_obj  = "OBJETO" if "OBJETO" in df.columns else ("OBJETIVO" if "OBJETIVO" in df.columns else None)
-    col_tipo = "TIPO" if "TIPO" in df.columns else None
-    col_doc  = "DOCUMENTO" if "DOCUMENTO" in df.columns else None
-    col_ind  = "INDIRETO" if "INDIRETO" in df.columns else None
+    c_venc = pick_col(cols_norm, "DATA VENCIMENTO", "VENCIMENTO")
+    c_pag  = pick_col(cols_norm, "DATA PAGAMENTO", "PAGAMENTO")
+    c_val  = pick_col(cols_norm, "VALOR", "R$ VALOR", "R$VALOR")
 
-    col_val = "R$ VALOR" if "R$ VALOR" in df.columns else None
-    if not col_val:
-        cands = [c for c in df.columns if ("VALOR" in c and "R$" in c)]
-        if cands:
-            col_val = cands[0]
-        elif "VALOR" in df.columns:
-            col_val = "VALOR"
+    c_banco = pick_col(cols_norm, "BANCO")
+    c_plano = pick_col(cols_norm, "PLANO DE CONTAS", "PLANO DE CONTA", "CONTA")
+    c_tipo  = pick_col(cols_norm, "TIPO")
+    c_cc    = pick_col(cols_norm, "CENTRO DE CUSTO", "INDIRETO")
+    c_forn  = pick_col(cols_norm, "FORNECEDOR")
+    c_desc  = pick_col(cols_norm, "DESCRICAO", "DESCRIÇÃO", "HISTORICO", "HISTÓRICO", "OBS", "OBSERVACAO", "OBSERVAÇÃO")
 
-    df["_VENC"] = df[col_venc].apply(parse_date_any) if col_venc else pd.NaT
-    df["_PAG"]  = df[col_pag].apply(parse_date_any) if col_pag else pd.NaT
-    df["DATA_REF"] = df["_PAG"].where(df["_PAG"].notna(), df["_VENC"])
+    df["VENCIMENTO"] = df[c_venc].apply(parse_date_any) if c_venc else pd.NaT
+    df["PAGAMENTO"] = df[c_pag].apply(parse_date_any) if c_pag else pd.NaT
+    df["DATA_REF"] = df["PAGAMENTO"].where(df["PAGAMENTO"].notna(), df["VENCIMENTO"])
+    df["VALOR"] = df[c_val].apply(money_to_float) if c_val else 0.0
+
+    df["BANCO"] = df[c_banco].astype(str).map(_upper) if c_banco else ""
+    df["CONTA"] = df[c_plano].astype(str).map(_upper) if c_plano else ""
+    df["TIPO"] = df[c_tipo].astype(str).map(_upper) if c_tipo else ""
+    df["CENTRO_CUSTO"] = df[c_cc].astype(str).map(_upper) if c_cc else ""
+    df["FORNECEDOR"] = df[c_forn].astype(str).map(_upper) if c_forn else ""
+    df["DESCRICAO"] = df[c_desc].astype(str) if c_desc else ""
+
     df["YM"] = df["DATA_REF"].apply(to_ym)
-
-    df["CONTA"]     = df[col_cont].astype(str).map(_upper) if col_cont else ""
-    df["BANCO"]     = df[col_banc].astype(str).map(_upper) if col_banc else ""
-    df["TIPO"]      = df[col_tipo].astype(str).map(_upper) if col_tipo else ""
-    df["DOCUMENTO"] = df[col_doc].astype(str).map(_upper) if col_doc else ""
-    df["OBJETO"]    = df[col_obj].astype(str).map(_upper) if col_obj else ""
-    df["INDIRETO"]  = df[col_ind].astype(str).map(_upper) if col_ind else ""
-    df["VALOR"]     = df[col_val].apply(money_to_float) if col_val else 0.0
 
     df = df[df["DATA_REF"].notna()].copy()
     df = df[df["VALOR"] != 0].copy()
-    return df
+
+    keep = ["DATA_REF", "YM", "VENCIMENTO", "PAGAMENTO", "BANCO", "CONTA", "TIPO", "CENTRO_CUSTO", "FORNECEDOR", "DESCRICAO", "VALOR"]
+    keep = [c for c in keep if c in df.columns]
+    return df[keep].copy()
 
 def normalize_transferencias(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return df
+
     df = df.copy()
-    df.columns = [_norm_col(c) for c in df.columns]
+    cols_norm = [_norm_col(c) for c in df.columns]
+    df.columns = cols_norm
 
-    col_data = "DATA" if "DATA" in df.columns else None
-    col_or   = "ORIGEM" if "ORIGEM" in df.columns else None
-    col_de   = "DESTINO" if "DESTINO" in df.columns else None
-    col_val  = "VALOR" if "VALOR" in df.columns else None
-    if not col_val:
-        cands = [c for c in df.columns if "VALOR" in c]
-        col_val = cands[0] if cands else None
+    c_data = pick_col(cols_norm, "DATA")
+    c_or   = pick_col(cols_norm, "BANCO SAIDA", "BANCO SAÍDA", "ORIGEM")
+    c_de   = pick_col(cols_norm, "BANCO ENTRADA", "DESTINO")
+    c_val  = pick_col(cols_norm, "VALOR", "R$ VALOR", "R$VALOR")
+    c_desc = pick_col(cols_norm, "DESCRICAO", "DESCRIÇÃO")
 
-    df["DATA"] = df[col_data].apply(parse_date_any) if col_data else pd.NaT
+    df["DATA"] = df[c_data].apply(parse_date_any) if c_data else pd.NaT
+    df["ORIGEM"] = df[c_or].astype(str).map(_upper) if c_or else ""
+    df["DESTINO"] = df[c_de].astype(str).map(_upper) if c_de else ""
+    df["DESCRICAO"] = df[c_desc].astype(str) if c_desc else ""
+    df["VALOR"] = df[c_val].apply(money_to_float) if c_val else 0.0
     df["YM"] = df["DATA"].apply(to_ym)
-
-    df["ORIGEM"]  = df[col_or].astype(str).map(_upper) if col_or else ""
-    df["DESTINO"] = df[col_de].astype(str).map(_upper) if col_de else ""
-    df["VALOR"]   = df[col_val].apply(money_to_float) if col_val else 0.0
 
     df = df[df["DATA"].notna()].copy()
     df = df[df["VALOR"] != 0].copy()
-    return df
+
+    keep = ["DATA", "YM", "ORIGEM", "DESTINO", "DESCRICAO", "VALOR"]
+    keep = [c for c in keep if c in df.columns]
+    return df[keep].copy()
 
 def compute_fluxo_caixa(df_ent: pd.DataFrame, df_sai: pd.DataFrame) -> pd.DataFrame:
     ent_day = (df_ent.groupby("DATA")["VALOR"].sum().reset_index().rename(columns={"VALOR":"ENTRADAS"})) if not df_ent.empty else pd.DataFrame(columns=["DATA","ENTRADAS"])
@@ -505,179 +386,37 @@ def compute_fluxo_caixa(df_ent: pd.DataFrame, df_sai: pd.DataFrame) -> pd.DataFr
     base = ent_day.merge(sai_day, on="DATA", how="outer").fillna(0.0)
     base["SALDO_DIA"] = base["ENTRADAS"] - base["SAIDAS"]
     base = base.sort_values("DATA")
+    base["SALDO_ACUM"] = base["SALDO_DIA"].cumsum()
     base["YM"] = base["DATA"].apply(to_ym)
     return base
 
+def compute_venc_pag(df_sai: pd.DataFrame) -> pd.DataFrame:
+    """Resumo diário: Vencimentos vs Pagamentos (para comparar Pag x Venc)."""
+    if df_sai.empty:
+        return pd.DataFrame(columns=["DATA","VENCIMENTOS","PAGAMENTOS","ABERTO"])
+    venc = df_sai[df_sai["VENCIMENTO"].notna()].groupby("VENCIMENTO")["VALOR"].sum().reset_index().rename(columns={"VENCIMENTO":"DATA","VALOR":"VENCIMENTOS"})
+    pag = df_sai[df_sai["PAGAMENTO"].notna()].groupby("PAGAMENTO")["VALOR"].sum().reset_index().rename(columns={"PAGAMENTO":"DATA","VALOR":"PAGAMENTOS"})
+    aberto = df_sai[df_sai["PAGAMENTO"].isna() & df_sai["VENCIMENTO"].notna()].groupby("VENCIMENTO")["VALOR"].sum().reset_index().rename(columns={"VENCIMENTO":"DATA","VALOR":"ABERTO"})
+    out = venc.merge(pag, on="DATA", how="outer").merge(aberto, on="DATA", how="outer").fillna(0.0)
+    out = out.sort_values("DATA")
+    return out
 
-# ====================== OPTIONAL REPORT TAB (Pag x Venc) ======================
-TAB_PAGVENC_CANDIDATES = [
-    "Pag x Venc - Fluxo de Caixa",
-    "Pag x Venc - Fluxo de Caixa ",
-    "Pag x Venc - Fluxo de Caixa  ",
-]
-
-@st.cache_data(ttl=300, show_spinner=False)
-def read_tab_values(sheet_id: str, tab: str) -> pd.DataFrame:
-    """Reads a sheet preserving layout (no header). Good for report-style tabs with merged cells."""
-    sh = client.open_by_key(sheet_id)
-    ws = sh.worksheet(tab)
-    values = ws.get_all_values()
-    return pd.DataFrame(values)
-
-def try_read_any_tab_values(sheet_id: str, candidates: List[str]) -> Tuple[Optional[str], pd.DataFrame]:
-    for name in candidates:
-        try:
-            df = read_tab_values(sheet_id, name)
-            if df is not None and not df.empty:
-                return name, df
-        except Exception:
-            continue
-    return None, pd.DataFrame()
-
-MONTHS_PT = ["JAN","FEV","MAR","ABR","MAI","JUN","JUL","AGO","SET","OUT","NOV","DEZ"]
-
-def _as_str(x):
-    return str(x).strip() if x is not None and str(x).strip() != "" else ""
-
-def _to_float_safe(x):
-    if x is None:
-        return np.nan
-    s = str(x).strip()
-    if s == "" or s == "-":
-        return np.nan
-    # percent like 12,34% or 0,1234
-    s = s.replace("%","").strip()
-    # money / number in pt-BR
-    s2 = s.replace("R$","").replace("\u00a0"," ").strip()
-    s2 = s2.replace(".","").replace(",",".")
-    try:
-        return float(s2)
-    except Exception:
-        try:
-            return float(s)
-        except Exception:
-            return np.nan
-
-def parse_pagvenc_report(df_raw: pd.DataFrame) -> dict:
-    """
-    Parses the 'Pag x Venc - Fluxo de Caixa' report into:
-      - months: ordered list like ['2026-01', ...] is not available here; we use ['JAN','FEV',...]
-      - table_val: wide table (linhas x meses) with values
-      - table_ah:  wide table with AH%
-      - table_av:  wide table with AV%
-      - meta: header_row, label_col, month_cols
-    """
-    if df_raw is None or df_raw.empty:
-        return {}
-
-    df = df_raw.copy()
-
-    # Normalize strings
-    df = df.replace({None: "", np.nan: ""})
-    df = df.applymap(lambda x: str(x).strip())
-
-    # Find header row with month abbreviations
-    header_row = None
-    for i in range(min(60, len(df))):
-        row = [c.upper().strip() for c in df.iloc[i].tolist() if str(c).strip() != ""]
-        if any(m in row for m in MONTHS_PT):
-            header_row = i
-            break
-    if header_row is None:
-        return {}
-
-    # Find month start columns (JAN, FEV, ...)
-    month_start_cols = {}
-    header = [c.upper().strip() for c in df.iloc[header_row].tolist()]
-    for j, c in enumerate(header):
-        if c in MONTHS_PT:
-            month_start_cols[c] = j
-
-    if "JAN" not in month_start_cols:
-        return {}
-
-    first_month_col = min(month_start_cols.values())
-
-    # Choose label column (most non-empty text before first month col)
-    best_col = 0
-    best_score = -1
-    for j in range(0, first_month_col):
-        col = df.iloc[header_row+1:, j].astype(str)
-        # score: count of non-empty strings that are not pure numbers
-        nn = col[col.str.strip() != ""]
-        non_num = nn[~nn.str.match(r"^[\d\.\,\-\%R\$\s]+$")]
-        score = len(non_num)
-        if score > best_score:
-            best_score = score
-            best_col = j
-    label_col = best_col
-
-    # Build section + rows
-    current_section = "GERAL"
-    rows = []
-    for i in range(header_row + 1, len(df)):
-        label = _as_str(df.iat[i, label_col])
-        if label == "":
-            continue
-        u = label.upper()
-
-        # section markers
-        if "ENTRADAS" in u and u.startswith("("):
-            current_section = "ENTRADAS"
-        elif ("SAIDAS" in u or "SAÍDAS" in u) and u.startswith("("):
-            current_section = "SAÍDAS"
-        elif "INVEST" in u and u.startswith("("):
-            current_section = "INVESTIMENTOS"
-        elif "FLUXO" in u and "CAIXA" in u:
-            current_section = "FLUXO DE CAIXA"
-        elif "SALDO" in u and "OPERACIONAL" in u:
-            current_section = "SALDO OPERACIONAL"
-        elif "RESULTADO" in u:
-            current_section = "RESULTADO"
-        # Keep the row (ignore single '-' rows)
-        if label.strip() == "-":
-            continue
-        rows.append((i, current_section, label))
-
-    # Month columns: value, AH, AV
-    month_cols = []
-    for m in MONTHS_PT:
-        if m in month_start_cols:
-            c0 = month_start_cols[m]
-            month_cols.append((m, c0, c0+1, c0+2))
-
-    # Build long tables
-    rec_val = []
-    rec_ah = []
-    rec_av = []
-    for i, section, label in rows:
-        for m, c_val, c_ah, c_av in month_cols:
-            v = _to_float_safe(df.iat[i, c_val]) if c_val < df.shape[1] else np.nan
-            ah = _to_float_safe(df.iat[i, c_ah]) if c_ah < df.shape[1] else np.nan
-            av = _to_float_safe(df.iat[i, c_av]) if c_av < df.shape[1] else np.nan
-            rec_val.append({"SEÇÃO": section, "LINHA": label, "MÊS": m, "VALOR": v})
-            rec_ah.append({"SEÇÃO": section, "LINHA": label, "MÊS": m, "AH": ah})
-            rec_av.append({"SEÇÃO": section, "LINHA": label, "MÊS": m, "AV": av})
-
-    df_val = pd.DataFrame(rec_val)
-    df_ah = pd.DataFrame(rec_ah)
-    df_av = pd.DataFrame(rec_av)
-
-    table_val = df_val.pivot_table(index=["SEÇÃO","LINHA"], columns="MÊS", values="VALOR", aggfunc="first").reset_index()
-    table_ah  = df_ah.pivot_table(index=["SEÇÃO","LINHA"], columns="MÊS", values="AH", aggfunc="first").reset_index()
-    table_av  = df_av.pivot_table(index=["SEÇÃO","LINHA"], columns="MÊS", values="AV", aggfunc="first").reset_index()
-
-    return {
-        "header_row": header_row,
-        "label_col": label_col,
-        "month_cols": month_cols,
-        "table_val": table_val,
-        "table_ah": table_ah,
-        "table_av": table_av,
-        "df_long_val": df_val,
-    }
+def compute_top(df: pd.DataFrame, col: str, n: int = 12) -> pd.DataFrame:
+    if df.empty or col not in df.columns:
+        return pd.DataFrame(columns=[col, "VALOR"])
+    g = df.groupby(col)["VALOR"].sum().reset_index().sort_values("VALOR", ascending=False).head(n)
+    return g
 
 # ====================== LOAD DATA ======================
+st.sidebar.markdown(f"### {COMPANY_NAME}")
+if LOGO_URL:
+    st.sidebar.image(LOGO_URL, use_container_width=True)
+st.sidebar.markdown("<div class='small'>Financeiro • Streamlit</div>", unsafe_allow_html=True)
+st.sidebar.markdown("<div class='hr'></div>", unsafe_allow_html=True)
+
+PAGES = [("Dashboard","📊"),("Entradas","💚"),("Saídas","💸"),("Investimentos","🟨"),("Fluxo de Caixa","💧"),("Conciliação","🧾"),("Exportar","⬇️")]
+page = st.sidebar.radio("Menu", [f"{ico}  {name}" for name, ico in PAGES], index=0)
+
 with st.spinner("Carregando planilha..."):
     df_ent_raw = read_tab(SHEET_ID, TAB_ENT)
     df_sai_raw = read_tab(SHEET_ID, TAB_SAI)
@@ -689,20 +428,10 @@ df_trf = normalize_transferencias(df_trf_raw)
 
 months = sorted(list(set([m for m in df_ent.get("YM", []) if m] + [m for m in df_sai.get("YM", []) if m])))
 if not months:
-    st.error("Não encontrei datas válidas nas abas de Entradas/Saídas.")
+    st.error("Não encontrei datas válidas nas abas 4. Entradas / 5. Saídas.")
     st.stop()
 
-# ====================== SIDEBAR ======================
-st.sidebar.markdown(f"### {COMPANY_NAME}")
-if LOGO_URL:
-    st.sidebar.image(LOGO_URL, use_container_width=True)
-st.sidebar.markdown("<div class='small'>Financeiro • Streamlit</div>", unsafe_allow_html=True)
-st.sidebar.markdown("<div class='hr'></div>", unsafe_allow_html=True)
-
-PAGES = [("Dashboard","📊"),("Entradas","💚"),("Saídas","💸"),("Investimentos","🟨"),("Fluxo de Caixa","💧"),("Conciliação","🧾"),("Exportar","⬇️")]
-page = st.sidebar.radio("Menu", [f"{ico}  {name}" for name, ico in PAGES], index=0)
-
-# ====================== FILTERS ======================
+# ====================== HEADER + FILTERS ======================
 st.markdown(f"# {COMPANY_NAME}")
 st.markdown("<div class='small'>Painel financeiro (Google Sheets) • Layout estilo sistema</div>", unsafe_allow_html=True)
 
@@ -731,11 +460,11 @@ with c2:
         st.caption("Sem datas suficientes para filtrar período.")
 
 with c3:
-    capt_opts = sorted(df_ent[df_ent["YM"] == ym_sel]["CAPTACAO"].dropna().unique().tolist()) if not df_ent.empty else []
+    capt_opts = sorted(df_ent[df_ent["YM"] == ym_sel]["CAPTACAO"].dropna().unique().tolist()) if (not df_ent.empty and "CAPTACAO" in df_ent.columns) else []
     capt_sel = st.multiselect("Captação", options=capt_opts, default=capt_opts)
 
 with c4:
-    banco_opts = sorted(df_sai[df_sai["YM"] == ym_sel]["BANCO"].dropna().unique().tolist()) if not df_sai.empty else []
+    banco_opts = sorted(df_sai[df_sai["YM"] == ym_sel]["BANCO"].dropna().unique().tolist()) if (not df_sai.empty and "BANCO" in df_sai.columns) else []
     banco_sel = st.multiselect("Banco", options=banco_opts, default=banco_opts)
 
 def apply_filters():
@@ -751,27 +480,26 @@ def apply_filters():
         if not trf.empty:
             trf = trf[(trf["DATA"] >= dt_ini) & (trf["DATA"] <= dt_fim)].copy()
 
-    if capt_sel and not ent.empty:
+    if capt_sel and (not ent.empty) and ("CAPTACAO" in ent.columns):
         ent = ent[ent["CAPTACAO"].isin([_upper(x) for x in capt_sel])].copy()
-    if banco_sel and not sai.empty:
+    if banco_sel and (not sai.empty) and ("BANCO" in sai.columns):
         sai = sai[sai["BANCO"].isin([_upper(x) for x in banco_sel])].copy()
 
     return ent, sai, trf
 
 ent_f, sai_f, trf_f = apply_filters()
 
-# KPIs
-ent_total = float(ent_f["VALOR"].sum()) if not ent_f.empty else 0.0
-sai_total = float(sai_f["VALOR"].sum()) if not sai_f.empty else 0.0
+# ====================== KPIs ======================
+ent_total = float(ent_f["VALOR"].sum()) if (not ent_f.empty and "VALOR" in ent_f.columns) else 0.0
+sai_total = float(sai_f["VALOR"].sum()) if (not sai_f.empty and "VALOR" in sai_f.columns) else 0.0
+
+inv_total = 0.0
 inv_mask = pd.Series([False] * len(sai_f))
-if not sai_f.empty:
-    inv_mask = (
-        sai_f["CONTA"].astype(str).str.contains("INVEST", na=False) |
-        sai_f["INDIRETO"].astype(str).str.contains("INVEST", na=False) |
-        sai_f["OBJETO"].astype(str).str.contains("INVEST", na=False)
-    )
-inv_total = float(sai_f.loc[inv_mask, "VALOR"].sum()) if not sai_f.empty else 0.0
-desp_total = sai_total - inv_total
+if (not sai_f.empty) and ("CONTA" in sai_f.columns):
+    inv_mask = sai_f["CONTA"].astype(str).str.contains("INVEST", na=False)
+    inv_total = float(sai_f.loc[inv_mask, "VALOR"].sum()) if "VALOR" in sai_f.columns else 0.0
+
+desp_total = max(sai_total - inv_total, 0.0)
 lucro_liq = ent_total - sai_total
 
 # ====================== PAGES ======================
@@ -781,7 +509,7 @@ if page.startswith("📊"):
     cA, cB, cC, cD, cE = st.columns(5)
     with cA: st_kpi("Receita Total", fmt_brl(ent_total), sub=f"Mês {sel_month_label}")
     with cB: st_kpi("Despesas", fmt_brl(desp_total), sub="Saídas sem investimentos")
-    with cC: st_kpi("Investimentos", fmt_brl(inv_total), sub="Detecção automática", badge=("revisável", "warn"))
+    with cC: st_kpi("Investimentos", fmt_brl(inv_total), sub="Regra: CONTA contém 'INVEST'", badge=("revisável", "warn"))
     with cD: st_kpi("Total de Saídas", fmt_brl(sai_total), sub="Despesas + investimentos")
     with cE:
         badge = ("positivo", "good") if lucro_liq >= 0 else ("negativo", "bad")
@@ -796,6 +524,7 @@ if page.startswith("📊"):
     evo = evo.sort_values("YM")
     evo["Mês"] = evo["YM"].map(month_label)
     evo_melt = evo.melt(id_vars=["YM","Mês"], value_vars=["Receitas","Saídas","Resultado"], var_name="Métrica", value_name="Valor")
+
     st.altair_chart(
         alt.Chart(evo_melt).mark_bar().encode(
             x=alt.X("Mês:N", sort=list(evo["Mês"]), title=""),
@@ -810,20 +539,20 @@ if page.startswith("📊"):
     st.markdown("## Detalhamento (amostra)")
     t1, t2 = st.columns(2)
     with t1:
-        show_ent = ent_f.sort_values("DATA", ascending=False).head(250).copy()
+        show_ent = ent_f.sort_values("DATA", ascending=False).head(250).copy() if not ent_f.empty else ent_f
         if not show_ent.empty:
-            show_ent["R$ Entrada"] = show_ent["VALOR"].map(fmt_brl)
+            show_ent["R$"] = show_ent["VALOR"].map(fmt_brl)
         st.dataframe(show_ent.drop(columns=["VALOR"], errors="ignore"), use_container_width=True, hide_index=True)
     with t2:
-        show_sai = sai_f.sort_values("DATA_REF", ascending=False).head(250).copy()
+        show_sai = sai_f.sort_values("DATA_REF", ascending=False).head(250).copy() if not sai_f.empty else sai_f
         if not show_sai.empty:
-            show_sai["R$ Valor"] = show_sai["VALOR"].map(fmt_brl)
+            show_sai["R$"] = show_sai["VALOR"].map(fmt_brl)
         st.dataframe(show_sai.drop(columns=["VALOR"], errors="ignore"), use_container_width=True, hide_index=True)
 
 elif page.startswith("💚"):
     st.markdown("<div class='hr'></div>", unsafe_allow_html=True)
     st.markdown("## Entradas — visão analítica")
-    daily = ent_f.groupby("DATA")["VALOR"].sum().reset_index().sort_values("DATA")
+    daily = ent_f.groupby("DATA")["VALOR"].sum().reset_index().sort_values("DATA") if not ent_f.empty else pd.DataFrame()
     if not daily.empty:
         st.altair_chart(
             alt.Chart(daily).mark_line(point=True).encode(
@@ -833,15 +562,15 @@ elif page.startswith("💚"):
             ).properties(height=320),
             use_container_width=True
         )
-    out = ent_f.sort_values("DATA", ascending=False).copy()
+    out = ent_f.sort_values("DATA", ascending=False).copy() if not ent_f.empty else ent_f
     if not out.empty:
-        out["R$ Entrada"] = out["VALOR"].map(fmt_brl)
+        out["R$"] = out["VALOR"].map(fmt_brl)
     st.dataframe(out.drop(columns=["VALOR"], errors="ignore"), use_container_width=True, hide_index=True)
 
 elif page.startswith("💸"):
     st.markdown("<div class='hr'></div>", unsafe_allow_html=True)
     st.markdown("## Saídas — visão analítica")
-    daily = sai_f.groupby("DATA_REF")["VALOR"].sum().reset_index().sort_values("DATA_REF")
+    daily = sai_f.groupby("DATA_REF")["VALOR"].sum().reset_index().sort_values("DATA_REF") if not sai_f.empty else pd.DataFrame()
     if not daily.empty:
         st.altair_chart(
             alt.Chart(daily).mark_line(point=True).encode(
@@ -851,251 +580,174 @@ elif page.startswith("💸"):
             ).properties(height=320),
             use_container_width=True
         )
-    out = sai_f.sort_values("DATA_REF", ascending=False).copy()
+    out = sai_f.sort_values("DATA_REF", ascending=False).copy() if not sai_f.empty else sai_f
     if not out.empty:
-        out["R$ Valor"] = out["VALOR"].map(fmt_brl)
+        out["R$"] = out["VALOR"].map(fmt_brl)
     st.dataframe(out.drop(columns=["VALOR"], errors="ignore"), use_container_width=True, hide_index=True)
 
 elif page.startswith("🟨"):
     st.markdown("<div class='hr'></div>", unsafe_allow_html=True)
-    st.markdown("## Investimentos (detecção automática)")
+    st.markdown("## Investimentos (regra inicial)")
     inv = sai_f.loc[inv_mask].copy() if not sai_f.empty else pd.DataFrame()
     c1, c2 = st.columns(2)
     with c1: st_kpi("Total investimentos", fmt_brl(inv["VALOR"].sum() if not inv.empty else 0))
-    with c2: st_kpi("Lançamentos", str(int(len(inv))))
-    inv_out = inv.sort_values("DATA_REF", ascending=False).copy()
+    with c2: st_kpi("Lançamentos", str(int(len(inv))) if not inv.empty else "0")
+    inv_out = inv.sort_values("DATA_REF", ascending=False).copy() if not inv.empty else inv
     if not inv_out.empty:
-        inv_out["R$ Valor"] = inv_out["VALOR"].map(fmt_brl)
+        inv_out["R$"] = inv_out["VALOR"].map(fmt_brl)
     st.dataframe(inv_out.drop(columns=["VALOR"], errors="ignore"), use_container_width=True, hide_index=True)
 
 elif page.startswith("💧"):
     st.markdown("<div class='hr'></div>", unsafe_allow_html=True)
     st.markdown("## Fluxo de Caixa")
 
-    tab1, tab2 = st.tabs(["Fluxo (calculado)", "Pag x Venc (planilha)"])
+    fluxo = compute_fluxo_caixa(ent_f, sai_f)
+    if fluxo.empty:
+        st.info("Sem dados suficientes para fluxo.")
+    else:
+        # KPIs do fluxo
+        cK1, cK2, cK3, cK4, cK5 = st.columns(5)
+        with cK1: st_kpi("Entradas (período)", fmt_brl(fluxo["ENTRADAS"].sum()))
+        with cK2: st_kpi("Saídas (período)", fmt_brl(fluxo["SAIDAS"].sum()))
+        with cK3:
+            saldo = float(fluxo["SALDO_DIA"].sum())
+            badge = ("positivo", "good") if saldo >= 0 else ("negativo", "bad")
+            st_kpi("Saldo do período", fmt_brl(saldo), badge=badge)
+        # contas em aberto (saídas sem pagamento)
+        aberto = 0.0
+        vencidas = 0.0
+        if not sai_f.empty and "PAGAMENTO" in sai_f.columns and "VENCIMENTO" in sai_f.columns:
+            aberto = float(sai_f[sai_f["PAGAMENTO"].isna()]["VALOR"].sum())
+            hoje = date.today()
+            vencidas = float(sai_f[(sai_f["PAGAMENTO"].isna()) & (sai_f["VENCIMENTO"].notna()) & (sai_f["VENCIMENTO"] < hoje)]["VALOR"].sum())
+        with cK4: st_kpi("Contas a pagar (aberto)", fmt_brl(aberto))
+        with cK5: st_kpi("Vencidas em aberto", fmt_brl(vencidas), badge=("atenção", "warn") if vencidas > 0 else ("ok", "good"))
 
-    with tab1:
-        fluxo = compute_fluxo_caixa(ent_f, sai_f)
-        if fluxo.empty:
-            st.info("Sem dados suficientes para fluxo.")
+        st.markdown("<div class='hr'></div>", unsafe_allow_html=True)
+
+        # 1) Linhas: entradas/saídas/saldo-dia
+        melt = fluxo.melt(id_vars=["DATA"], value_vars=["ENTRADAS","SAIDAS","SALDO_DIA"], var_name="Métrica", value_name="Valor")
+        st.altair_chart(
+            alt.Chart(melt).mark_line(point=True).encode(
+                x=alt.X("DATA:T", title="Data"),
+                y=alt.Y("Valor:Q", title="R$"),
+                color=alt.Color("Métrica:N", legend=alt.Legend(title="")),
+                tooltip=[alt.Tooltip("DATA:T", title="Data"), "Métrica", alt.Tooltip("Valor:Q", format=",.2f")]
+            ).properties(height=320),
+            use_container_width=True
+        )
+
+        # 2) Saldo acumulado
+        st.markdown("### Saldo acumulado")
+        st.altair_chart(
+            alt.Chart(fluxo).mark_line(point=True).encode(
+                x=alt.X("DATA:T", title="Data"),
+                y=alt.Y("SALDO_ACUM:Q", title="R$"),
+                tooltip=[alt.Tooltip("DATA:T", title="Data"), alt.Tooltip("SALDO_ACUM:Q", title="Saldo acumulado", format=",.2f")],
+            ).properties(height=260),
+            use_container_width=True
+        )
+
+        # 3) Pag x Venc (saídas) — vencimentos vs pagamentos
+        st.markdown("### Pagamentos x Vencimentos (saídas)")
+        pv = compute_venc_pag(sai_f)
+        if pv.empty:
+            st.caption("Sem dados de vencimento/pagamento suficientes.")
         else:
-            melt = fluxo.melt(
-                id_vars=["DATA"],
-                value_vars=["ENTRADAS", "SAIDAS", "SALDO_DIA"],
-                var_name="Métrica",
-                value_name="Valor",
-            )
+            pv_melt = pv.melt(id_vars=["DATA"], value_vars=["VENCIMENTOS","PAGAMENTOS","ABERTO"], var_name="Métrica", value_name="Valor")
             st.altair_chart(
-                alt.Chart(melt).mark_line(point=True).encode(
+                alt.Chart(pv_melt).mark_bar().encode(
                     x=alt.X("DATA:T", title="Data"),
                     y=alt.Y("Valor:Q", title="R$"),
                     color=alt.Color("Métrica:N", legend=alt.Legend(title="")),
                     tooltip=[alt.Tooltip("DATA:T", title="Data"), "Métrica", alt.Tooltip("Valor:Q", format=",.2f")],
-                ).properties(height=360),
-                use_container_width=True,
+                ).properties(height=320),
+                use_container_width=True
             )
 
-            # ===== EXTRA: Pagamento x Vencimento (a partir da aba 5. Saídas) =====
-            sai_status = status_pagamento(sai_f)
-            serie_pv, mens_pv = compute_pag_x_venc(sai_f)
+        st.markdown("<div class='hr'></div>", unsafe_allow_html=True)
 
-            st.markdown("### Pagamento x Vencimento (do período filtrado)")
-
-            if not sai_status.empty:
-                aberto_val = float(sai_status.loc[sai_status["STATUS"].isin(["ABERTO","VENCIDO"]), "VALOR"].sum())
-                vencido_val = float(sai_status.loc[sai_status["STATUS"] == "VENCIDO", "VALOR"].sum())
-                pago_val = float(sai_status.loc[sai_status["STATUS"].isin(["PAGO","PAGO_EM_ATRASO"]), "VALOR"].sum())
-                pago_atraso_val = float(sai_status.loc[sai_status["STATUS"] == "PAGO_EM_ATRASO", "VALOR"].sum())
-                pontual = float(sai_status.loc[sai_status["STATUS"] == "PAGO", "VALOR"].sum())
-                pont_pct = (pontual / pago_val * 100.0) if pago_val > 0 else 0.0
-
-                k1, k2, k3, k4, k5 = st.columns(5)
-                with k1: st_kpi("A pagar (aberto)", fmt_brl(aberto_val), sub="Inclui vencidos")
-                with k2: st_kpi("Vencido", fmt_brl(vencido_val), sub="Atraso no período", badge=("atenção", "bad") if vencido_val > 0 else ("ok","good"))
-                with k3: st_kpi("Pago (total)", fmt_brl(pago_val), sub="No período")
-                with k4: st_kpi("Pago em atraso", fmt_brl(pago_atraso_val), sub="Depois do venc.", badge=("revisar", "warn") if pago_atraso_val > 0 else ("ok","good"))
-                with k5: st_kpi("Pontualidade", f"{pont_pct:,.1f}%".replace(",", "X").replace(".", ",").replace("X","."), sub="(valor pago no prazo)")
-
-            if not serie_pv.empty:
-                pv_melt = serie_pv.melt(id_vars=["DATA"], value_vars=["PAGAMENTOS","VENCIMENTOS"], var_name="Métrica", value_name="Valor")
-                st.altair_chart(
-                    alt.Chart(pv_melt).mark_bar().encode(
-                        x=alt.X("DATA:T", title="Data"),
-                        y=alt.Y("Valor:Q", title="R$"),
-                        color=alt.Color("Métrica:N", legend=alt.Legend(title="")),
-                        tooltip=[alt.Tooltip("DATA:T", title="Data"), "Métrica", alt.Tooltip("Valor:Q", format=",.2f")],
-                    ).properties(height=280),
-                    use_container_width=True,
-                )
+        # 4) Top categorias (aproximação da visão analítica do "Pag x Venc")
+        st.markdown("### Onde está o dinheiro (Top categorias)")
+        cT1, cT2 = st.columns(2)
+        with cT1:
+            top_ent = compute_top(ent_f, "PLANO_CONTAS", n=12)
+            if top_ent.empty:
+                st.caption("Sem plano de contas nas entradas.")
             else:
-                st.caption("Sem datas suficientes em VENCIMENTO/PAGAMENTO neste recorte para comparar Pag x Venc.")
-
-            # ===== EXTRA: Acumulado (real x por vencimento) =====
-            st.markdown("### Acumulado do mês (real x por vencimento)")
-            if not fluxo.empty:
-                base = fluxo[["DATA","SALDO_DIA","ENTRADAS","SAIDAS"]].copy()
-                base = base.sort_values("DATA")
-                base["ACUM_REAL"] = base["SALDO_DIA"].cumsum()
-
-                # por vencimento: usa SAÍDAS agrupadas por VENCIMENTO (sem depender da aba de relatório)
-                if (not sai_f.empty) and ("VENCIMENTO" in sai_f.columns):
-                    sai_v = sai_f.dropna(subset=["VENCIMENTO"]).groupby("VENCIMENTO")["VALOR"].sum().reset_index().rename(columns={"VENCIMENTO":"DATA","VALOR":"SAIDAS_VENC"})
-                else:
-                    sai_v = pd.DataFrame(columns=["DATA","SAIDAS_VENC"])
-                ent_d = ent_f.groupby("DATA")["VALOR"].sum().reset_index().rename(columns={"VALOR":"ENTRADAS"}) if (not ent_f.empty and "DATA" in ent_f.columns) else pd.DataFrame(columns=["DATA","ENTRADAS"])
-
-                b2 = pd.DataFrame({"DATA": base["DATA"].tolist()})
-                b2 = b2.merge(ent_d, on="DATA", how="left").merge(sai_v, on="DATA", how="left").fillna(0.0)
-                b2["SALDO_VENC_DIA"] = b2["ENTRADAS"] - b2["SAIDAS_VENC"]
-                b2["ACUM_VENC"] = b2["SALDO_VENC_DIA"].cumsum()
-
-                acum = b2.merge(base[["DATA","ACUM_REAL"]], on="DATA", how="left")
-                acum_melt = acum.melt(id_vars=["DATA"], value_vars=["ACUM_REAL","ACUM_VENC"], var_name="Série", value_name="Valor")
                 st.altair_chart(
-                    alt.Chart(acum_melt).mark_line(point=False).encode(
-                        x=alt.X("DATA:T", title="Data"),
-                        y=alt.Y("Valor:Q", title="R$"),
-                        color=alt.Color("Série:N", legend=alt.Legend(title="")),
-                        tooltip=[alt.Tooltip("DATA:T", title="Data"), "Série", alt.Tooltip("Valor:Q", format=",.2f")],
-                    ).properties(height=300),
-                    use_container_width=True,
+                    alt.Chart(top_ent).mark_bar().encode(
+                        y=alt.Y("PLANO_CONTAS:N", sort="-x", title=""),
+                        x=alt.X("VALOR:Q", title="R$"),
+                        tooltip=["PLANO_CONTAS", alt.Tooltip("VALOR:Q", format=",.2f")],
+                    ).properties(height=360),
+                    use_container_width=True
                 )
 
-            # ===== EXTRA: Top contas do mês =====
-            st.markdown("### Principais contas do mês")
-            cta, ctb = st.columns(2)
-            with cta:
-                st.markdown("**Entradas (top 10)**")
-                if (not ent_f.empty) and ("PLANO_CONTAS" in ent_f.columns):
-                    top_ent = ent_f.groupby("PLANO_CONTAS")["VALOR"].sum().reset_index().sort_values("VALOR", ascending=False).head(10)
-                    top_ent["R$"] = top_ent["VALOR"].map(fmt_brl)
-                    st.dataframe(top_ent.drop(columns=["VALOR"]), use_container_width=True, hide_index=True)
-                else:
-                    st.caption("Sem coluna PLANO_CONTAS em Entradas.")
-            with ctb:
-                st.markdown("**Saídas (top 10)**")
-                if (not sai_f.empty) and ("CONTA" in sai_f.columns):
-                    top_sai = sai_f.groupby("CONTA")["VALOR"].sum().reset_index().sort_values("VALOR", ascending=False).head(10)
-                    top_sai["R$"] = top_sai["VALOR"].map(fmt_brl)
-                    st.dataframe(top_sai.drop(columns=["VALOR"]), use_container_width=True, hide_index=True)
-                else:
-                    st.caption("Sem coluna CONTA em Saídas.")
-
-            tbl = fluxo.copy()
-            tbl["R$ Entradas"] = tbl["ENTRADAS"].map(fmt_brl)
-            tbl["R$ Saídas"] = tbl["SAIDAS"].map(fmt_brl)
-            tbl["R$ Saldo"] = tbl["SALDO_DIA"].map(fmt_brl)
-            st.dataframe(
-                tbl[["DATA", "R$ Entradas", "R$ Saídas", "R$ Saldo"]].sort_values("DATA", ascending=False),
-                use_container_width=True,
-                hide_index=True,
-            )
-
-    with tab2:
-        tab_name, rep_raw = try_read_any_tab_values(SHEET_ID, TAB_PAGVENC_CANDIDATES)
-        if not tab_name:
-            st.info("Não encontrei a aba 'Pag x Venc - Fluxo de Caixa' na planilha. Verifique o nome da aba.")
-        else:
-            rep = parse_pagvenc_report(rep_raw)
-            if not rep:
-                st.info("Consegui abrir a aba, mas não consegui reconhecer o formato (meses JAN/FEV/... não encontrados).")
+        with cT2:
+            top_sai = compute_top(sai_f, "CONTA", n=12)
+            if top_sai.empty:
+                st.caption("Sem conta/plano nas saídas.")
             else:
-                st.caption(f"Aba lida: {tab_name}")
+                st.altair_chart(
+                    alt.Chart(top_sai).mark_bar().encode(
+                        y=alt.Y("CONTA:N", sort="-x", title=""),
+                        x=alt.X("VALOR:Q", title="R$"),
+                        tooltip=["CONTA", alt.Tooltip("VALOR:Q", format=",.2f")],
+                    ).properties(height=360),
+                    use_container_width=True
+                )
 
-                table_val = rep["table_val"].copy()
-                table_ah = rep["table_ah"].copy()
-                table_av = rep["table_av"].copy()
-                long_val = rep["df_long_val"].copy()
+        st.markdown("<div class='hr'></div>", unsafe_allow_html=True)
 
-                secoes = sorted([s for s in table_val["SEÇÃO"].dropna().unique().tolist() if str(s).strip() != ""])
-                sec_sel = st.selectbox("Seção", options=secoes, index=0 if secoes else None)
-
-                linhas = table_val[table_val["SEÇÃO"] == sec_sel]["LINHA"].tolist() if sec_sel else []
-                linha_sel = st.selectbox("Linha (gráfico)", options=linhas, index=0 if linhas else None)
-
-                metric = st.radio("Métrica", options=["Valor", "AH %", "AV %"], horizontal=True)
-
-                if linha_sel:
-                    if metric == "Valor":
-                        df_line = long_val[(long_val["SEÇÃO"] == sec_sel) & (long_val["LINHA"] == linha_sel)].copy()
-                        df_line["Valor_fmt"] = df_line["VALOR"].apply(lambda x: fmt_brl(x) if pd.notna(x) else "-")
-                        st.altair_chart(
-                            alt.Chart(df_line).mark_line(point=True).encode(
-                                x=alt.X("MÊS:N", sort=MONTHS_PT, title=""),
-                                y=alt.Y("VALOR:Q", title="R$"),
-                                tooltip=["MÊS", alt.Tooltip("VALOR:Q", format=",.2f")],
-                            ).properties(height=320),
-                            use_container_width=True,
-                        )
-                    elif metric == "AH %":
-                        row = table_ah[(table_ah["SEÇÃO"] == sec_sel) & (table_ah["LINHA"] == linha_sel)].copy()
-                        if not row.empty:
-                            melt = row.melt(id_vars=["SEÇÃO","LINHA"], value_vars=[m for m in MONTHS_PT if m in row.columns],
-                                            var_name="MÊS", value_name="AH")
-                            st.altair_chart(
-                                alt.Chart(melt).mark_line(point=True).encode(
-                                    x=alt.X("MÊS:N", sort=MONTHS_PT, title=""),
-                                    y=alt.Y("AH:Q", title="AH %"),
-                                    tooltip=["MÊS", alt.Tooltip("AH:Q", format=",.2f")],
-                                ).properties(height=320),
-                                use_container_width=True,
-                            )
-                    else:
-                        row = table_av[(table_av["SEÇÃO"] == sec_sel) & (table_av["LINHA"] == linha_sel)].copy()
-                        if not row.empty:
-                            melt = row.melt(id_vars=["SEÇÃO","LINHA"], value_vars=[m for m in MONTHS_PT if m in row.columns],
-                                            var_name="MÊS", value_name="AV")
-                            st.altair_chart(
-                                alt.Chart(melt).mark_line(point=True).encode(
-                                    x=alt.X("MÊS:N", sort=MONTHS_PT, title=""),
-                                    y=alt.Y("AV:Q", title="AV %"),
-                                    tooltip=["MÊS", alt.Tooltip("AV:Q", format=",.2f")],
-                                ).properties(height=320),
-                                use_container_width=True,
-                            )
-
-                st.markdown("### Tabela da seção (valores)")
-                tbl = table_val[table_val["SEÇÃO"] == sec_sel].copy()
-                if not tbl.empty:
-                    for m in MONTHS_PT:
-                        if m in tbl.columns:
-                            tbl[m] = tbl[m].apply(lambda x: fmt_brl(x) if pd.notna(x) else "-")
-                st.dataframe(tbl, use_container_width=True, hide_index=True)
-
+        # 5) Detalhamento rápido (opcional)
+        with st.expander("Detalhamento do fluxo (tabela diária)", expanded=False):
+            show = fluxo.copy()
+            for c in ["ENTRADAS","SAIDAS","SALDO_DIA","SALDO_ACUM"]:
+                show[c] = show[c].map(fmt_brl)
+            st.dataframe(show, use_container_width=True, hide_index=True)
 
 elif page.startswith("🧾"):
     st.markdown("<div class='hr'></div>", unsafe_allow_html=True)
-    st.markdown("## Conciliação (por banco)")
+    st.markdown("## Conciliação (por banco + transferências)")
     if sai_f.empty:
         st.info("Sem saídas no período.")
     else:
-        by_bank_out = sai_f.groupby("BANCO")["VALOR"].sum().reset_index().rename(columns={"VALOR":"SAÍDAS"})
+        by_bank_out = sai_f.groupby("BANCO")["VALOR"].sum().reset_index().rename(columns={"VALOR":"SAÍDAS"}) if "BANCO" in sai_f.columns else pd.DataFrame(columns=["BANCO","SAÍDAS"])
         if not trf_f.empty:
             trf_out = trf_f.groupby("ORIGEM")["VALOR"].sum().reset_index().rename(columns={"ORIGEM":"BANCO","VALOR":"TRANSFER_OUT"})
             trf_in  = trf_f.groupby("DESTINO")["VALOR"].sum().reset_index().rename(columns={"DESTINO":"BANCO","VALOR":"TRANSFER_IN"})
         else:
             trf_out = pd.DataFrame(columns=["BANCO","TRANSFER_OUT"])
             trf_in  = pd.DataFrame(columns=["BANCO","TRANSFER_IN"])
+
         conc = by_bank_out.merge(trf_out, on="BANCO", how="outer").merge(trf_in, on="BANCO", how="outer").fillna(0.0)
         conc["MOV_LIQ_TRF"] = conc["TRANSFER_IN"] - conc["TRANSFER_OUT"]
         conc = conc.sort_values("SAÍDAS", ascending=False)
+
         conc_show = conc.copy()
         for c in ["SAÍDAS","TRANSFER_OUT","TRANSFER_IN","MOV_LIQ_TRF"]:
             conc_show[c] = conc_show[c].map(fmt_brl)
         st.dataframe(conc_show, use_container_width=True, hide_index=True)
+
+        st.markdown("### Transferências (linhas)")
+        tt = trf_f.sort_values("DATA", ascending=False).copy() if not trf_f.empty else trf_f
+        if not tt.empty:
+            tt["R$"] = tt["VALOR"].map(fmt_brl)
+        st.dataframe(tt.drop(columns=["VALOR"], errors="ignore"), use_container_width=True, hide_index=True)
 
 else:
     st.markdown("<div class='hr'></div>", unsafe_allow_html=True)
     st.markdown("## Exportar (CSV)")
     ent_out = ent_f.copy()
     if not ent_out.empty:
-        ent_out["R$ Entrada"] = ent_out["VALOR"].map(fmt_brl)
+        ent_out["R$"] = ent_out["VALOR"].map(fmt_brl)
     st.download_button("Baixar Entradas (CSV)", data=ent_out.drop(columns=["VALOR"], errors="ignore").to_csv(index=False).encode("utf-8-sig"),
                        file_name=f"entradas_{ym_sel}.csv", mime="text/csv")
 
     sai_out = sai_f.copy()
     if not sai_out.empty:
-        sai_out["R$ Valor"] = sai_out["VALOR"].map(fmt_brl)
+        sai_out["R$"] = sai_out["VALOR"].map(fmt_brl)
     st.download_button("Baixar Saídas (CSV)", data=sai_out.drop(columns=["VALOR"], errors="ignore").to_csv(index=False).encode("utf-8-sig"),
                        file_name=f"saidas_{ym_sel}.csv", mime="text/csv")
 
