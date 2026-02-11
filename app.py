@@ -162,8 +162,17 @@ def month_label(ym: str) -> str:
         return ym
     return f"{ym[5:7]}/{ym[:4]}"
 
-def to_ym(d: date) -> str:
-    return f"{d.year}-{d.month:02d}"
+def to_ym(d) -> Optional[str]:
+    """Return YYYY-MM for many date-like types (date/datetime/Timestamp/np.datetime64)."""
+    if d is None or (isinstance(d, float) and pd.isna(d)):
+        return None
+    try:
+        dt = pd.to_datetime(d, dayfirst=True, errors="coerce")
+    except Exception:
+        dt = pd.NaT
+    if pd.isna(dt):
+        return None
+    return f"{int(dt.year):04d}-{int(dt.month):02d}"
 
 def safe_cols(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
@@ -318,9 +327,8 @@ def normalize_entradas(df: pd.DataFrame) -> pd.DataFrame:
 
     dist_cols = [c for c in df.columns if c.startswith("R$") and c != col_val]
 
-    df["_DATA"] = df[col_data].apply(parse_date_any) if col_data else pd.NaT
-    df["YM"] = df["_DATA"].apply(lambda d: to_ym(d) if isinstance(d, date) else None)
-
+    df["_DATA"] = pd.to_datetime(df[col_data], dayfirst=True, errors="coerce") if col_data else pd.NaT
+    df["YM"] = df["_DATA"].dt.strftime("%Y-%m")
     df["CAPTACAO"] = df[col_capt].astype(str).map(_upper) if col_capt else ""
     df["MEIO"]     = df[col_meio].astype(str).map(_upper) if col_meio else ""
     df["AREA"]     = df[col_area].astype(str).map(_upper) if col_area else ""
@@ -361,11 +369,10 @@ def normalize_saidas(df: pd.DataFrame) -> pd.DataFrame:
         elif "VALOR" in df.columns:
             col_val = "VALOR"
 
-    df["_VENC"] = df[col_venc].apply(parse_date_any) if col_venc else pd.NaT
-    df["_PAG"]  = df[col_pag].apply(parse_date_any) if col_pag else pd.NaT
+    df["_VENC"] = pd.to_datetime(df[col_venc], dayfirst=True, errors="coerce") if col_venc else pd.NaT
+    df["_PAG"]  = pd.to_datetime(df[col_pag], dayfirst=True, errors="coerce") if col_pag else pd.NaT
     df["DATA_REF"] = df["_PAG"].where(df["_PAG"].notna(), df["_VENC"])
-    df["YM"] = df["DATA_REF"].apply(lambda d: to_ym(d) if isinstance(d, date) else None)
-
+    df["YM"] = pd.to_datetime(df["DATA_REF"], errors="coerce").dt.strftime("%Y-%m")
     df["CONTA"]     = df[col_cont].astype(str).map(_upper) if col_cont else ""
     df["BANCO"]     = df[col_banc].astype(str).map(_upper) if col_banc else ""
     df["TIPO"]      = df[col_tipo].astype(str).map(_upper) if col_tipo else ""
@@ -392,9 +399,8 @@ def normalize_transferencias(df: pd.DataFrame) -> pd.DataFrame:
         cands = [c for c in df.columns if "VALOR" in c]
         col_val = cands[0] if cands else None
 
-    df["DATA"] = df[col_data].apply(parse_date_any) if col_data else pd.NaT
-    df["YM"] = df["DATA"].apply(lambda d: to_ym(d) if isinstance(d, date) else None)
-
+    df["DATA"] = pd.to_datetime(df[col_data], dayfirst=True, errors="coerce") if col_data else pd.NaT
+    df["YM"] = pd.to_datetime(df["DATA"], errors="coerce").dt.strftime("%Y-%m")
     df["ORIGEM"]  = df[col_or].astype(str).map(_upper) if col_or else ""
     df["DESTINO"] = df[col_de].astype(str).map(_upper) if col_de else ""
     df["VALOR"]   = df[col_val].apply(money_to_float) if col_val else 0.0
@@ -620,11 +626,11 @@ with c1:
 
 dates_in_month: List[date] = []
 if not df_ent.empty:
-    dates_in_month += [d for d in df_ent[df_ent["YM"] == ym_sel]["DATA"].tolist() if isinstance(d, date)]
+    dates_in_month += [d for d in df_ent[df_ent["YM"] == ym_sel]["DATA"].tolist() if pd.notna(d)]
 if not df_sai.empty:
-    dates_in_month += [d for d in df_sai[df_sai["YM"] == ym_sel]["DATA_REF"].tolist() if isinstance(d, date)]
-dmin = min(dates_in_month) if dates_in_month else None
-dmax = max(dates_in_month) if dates_in_month else None
+    dates_in_month += [d for d in df_sai[df_sai["YM"] == ym_sel]["DATA_REF"].tolist() if pd.notna(d)]
+dmin = (min(dates_in_month).date() if dates_in_month else None)
+dmax = (max(dates_in_month).date() if dates_in_month else None)
 
 with c2:
     if dmin and dmax:
@@ -649,11 +655,11 @@ def apply_filters():
 
     if dt_ini and dt_fim:
         if not ent.empty:
-            ent = ent[(ent["DATA"] >= dt_ini) & (ent["DATA"] <= dt_fim)].copy()
+            ent = ent[(ent["DATA"] >= pd.to_datetime(dt_ini)) & (ent["DATA"] <= pd.to_datetime(dt_fim))].copy()
         if not sai.empty:
-            sai = sai[(sai["DATA_REF"] >= dt_ini) & (sai["DATA_REF"] <= dt_fim)].copy()
+            sai = sai[(sai["DATA_REF"] >= pd.to_datetime(dt_ini)) & (sai["DATA_REF"] <= pd.to_datetime(dt_fim))].copy()
         if not trf.empty:
-            trf = trf[(trf["DATA"] >= dt_ini) & (trf["DATA"] <= dt_fim)].copy()
+            trf = trf[(trf["DATA"] >= pd.to_datetime(dt_ini)) & (trf["DATA"] <= pd.to_datetime(dt_fim))].copy()
 
     if capt_sel and not ent.empty:
         ent = ent[ent["CAPTACAO"].isin([_upper(x) for x in capt_sel])].copy()
