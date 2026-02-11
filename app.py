@@ -223,10 +223,74 @@ TAB_TRF   = "6. Transferencias"
 
 @st.cache_data(ttl=300, show_spinner=False)
 def read_tab(sheet_id: str, tab: str) -> pd.DataFrame:
+    """Lê uma aba do Google Sheets de forma robusta.
+
+    Motivo: ws.get_all_records() costuma falhar quando:
+    - cabeçalho tem colunas vazias/duplicadas
+    - existem células mescladas
+    - existem linhas em branco antes do cabeçalho
+    - há linhas com tamanhos diferentes
+
+    Estratégia:
+    - lê tudo com get_all_values()
+    - encontra a primeira linha não-vazia para ser o cabeçalho
+    - normaliza/torna único o nome das colunas
+    - monta o DataFrame com todas as linhas abaixo do cabeçalho
+    """
     sh = client.open_by_key(sheet_id)
     ws = sh.worksheet(tab)
-    rows = ws.get_all_records()
-    df = pd.DataFrame(rows) if rows else pd.DataFrame()
+
+    values = ws.get_all_values()
+    if not values:
+        return pd.DataFrame()
+
+    # remove linhas totalmente vazias no fim
+    while values and all(str(c).strip() == "" for c in values[-1]):
+        values.pop()
+
+    # encontra a primeira linha não-vazia (cabeçalho)
+    header_idx = None
+    for i, row in enumerate(values):
+        if any(str(c).strip() != "" for c in row):
+            header_idx = i
+            break
+    if header_idx is None:
+        return pd.DataFrame()
+
+    header = values[header_idx]
+    data_rows = values[header_idx + 1 :]
+
+    # normaliza cabeçalho: preenche vazios e garante unicidade
+    cols = []
+    seen = {}
+    for j, h in enumerate(header):
+        name = str(h).strip()
+        if name == "":
+            name = f"COL_{j+1}"
+        # mantém como está (não norm aqui, para preservar nomes originais no dataframe bruto)
+        base = name
+        if base in seen:
+            seen[base] += 1
+            name = f"{base}_{seen[base]}"
+        else:
+            seen[base] = 1
+        cols.append(name)
+
+    # garante que todas as linhas tenham o mesmo tamanho do header
+    n = len(cols)
+    norm_rows = []
+    for r in data_rows:
+        if len(r) < n:
+            r = r + [""] * (n - len(r))
+        elif len(r) > n:
+            r = r[:n]
+        norm_rows.append(r)
+
+    df = pd.DataFrame(norm_rows, columns=cols)
+
+    # remove linhas totalmente vazias
+    df = df.loc[~(df.apply(lambda x: all(str(v).strip()=="" for v in x), axis=1))].copy()
+
     return safe_cols(df)
 
 # ====================== NORMALIZERS ======================
