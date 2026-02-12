@@ -13,6 +13,7 @@ Secrets (Streamlit Cloud -> App -> Settings -> Secrets):
 - logo_url = "https://..."                (opcional)
 - [gcp_service_account] ...               (obrigatório)
 """
+
 # ====================== STREAMLIT CONFIG (DEVE SER O PRIMEIRO) ======================
 import streamlit as st
 st.set_page_config(page_title="Dashboard Financeiro", layout="wide")
@@ -23,7 +24,7 @@ import re
 import json
 import unicodedata
 from datetime import datetime, date
-from typing import Optional, Tuple, List
+from typing import Optional, Tuple, List, Dict
 
 import numpy as np
 import pandas as pd
@@ -44,7 +45,7 @@ st.markdown(
   --bg:#0b1220;--panel:#0f1729;--card:#111c33;--card2:#0f1729;
   --txt:#e8eefc;--mut:#9db0d5;--line:#1f2b45;
   --good:#23c55e;--bad:#ef4444;--warn:#f59e0b;--info:#3b82f6;
-  --ctl:#0f1729; --ctl2:#0b1220;
+  --ctrl:#0f1729; --ctrl2:#0a1020; --accent:#ff3b3b;
 }
 html, body, [data-testid="stAppViewContainer"]{background:var(--bg)!important;}
 .block-container{padding-top:1.2rem; padding-bottom:2rem; max-width: 1500px;}
@@ -68,31 +69,16 @@ p,li,span,div,label{color:var(--txt);}
 [data-testid="stSidebar"]{background:#0a1020;border-right:1px solid var(--line);}
 [data-testid="stSidebar"] *{color:var(--txt)!important;}
 
-/* --- FIX: inputs não ficarem transparentes --- */
-[data-baseweb="select"] > div{
-  background: var(--ctl) !important;
-  border-color: var(--line) !important;
-}
-[data-baseweb="input"] > div{
-  background: var(--ctl) !important;
-  border-color: var(--line) !important;
-}
-[data-baseweb="popover"]{
-  background: var(--ctl) !important;
-}
-div[data-testid="stDateInput"] input{
-  background: var(--ctl) !important;
-  border-color: var(--line) !important;
-  color: var(--txt) !important;
-}
-div[data-testid="stMultiSelect"] div[role="combobox"]{
-  background: var(--ctl) !important;
-  border-color: var(--line) !important;
-}
-div[data-testid="stSelectbox"] div[role="combobox"]{
-  background: var(--ctl) !important;
-  border-color: var(--line) !important;
-}
+/* ---------- Controles (selectbox, multiselect, date_input) com fundo sólido ---------- */
+div[data-baseweb="select"] > div{background:var(--ctrl)!important;border-color:var(--line)!important;}
+div[data-baseweb="select"] *{color:var(--txt)!important;}
+div[data-baseweb="popover"]{background:var(--ctrl)!important; border:1px solid var(--line)!important; border-radius:12px!important;}
+ul[role="listbox"]{background:var(--ctrl)!important;}
+li[role="option"]{background:var(--ctrl)!important; color:var(--txt)!important;}
+li[role="option"]:hover{background:#111c33!important;}
+div[data-baseweb="calendar"]{background:var(--ctrl)!important;}
+div[data-testid="stDateInput"] input{background:var(--ctrl)!important; color:var(--txt)!important; border-color:var(--line)!important;}
+div[data-testid="stMultiSelect"] div[data-baseweb="tag"]{background:rgba(255,59,59,.15)!important;border:1px solid rgba(255,59,59,.35)!important;}
 </style>
 """,
     unsafe_allow_html=True,
@@ -138,21 +124,27 @@ def _upper(x):
     return str(x).upper().strip() if pd.notna(x) else ""
 
 def parse_date_any(x):
+    """Converte o que vier do Sheets/Excel em date (ou NaT)."""
     if pd.isna(x) or x == "":
         return pd.NaT
     if isinstance(x, datetime):
         return x.date()
     if isinstance(x, date):
         return x
+    if isinstance(x, pd.Timestamp):
+        try:
+            return x.to_pydatetime().date()
+        except Exception:
+            return pd.NaT
     # números (às vezes o Sheets vem como serial)
-    if isinstance(x, (int, float, np.number)):
+    if isinstance(x, (int, float, np.number)) and not pd.isna(x):
         try:
             dt = pd.to_datetime(float(x), unit="D", origin="1899-12-30", errors="coerce")
             return dt.date() if pd.notna(dt) else pd.NaT
         except Exception:
             return pd.NaT
     s = str(x).strip()
-    for fmt in ("%d/%m/%Y", "%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y %H:%M:%S", "%d/%m/%Y %H:%M"):
+    for fmt in ("%d/%m/%Y", "%Y-%m-%d", "%d-%m-%Y"):
         try:
             return datetime.strptime(s, fmt).date()
         except Exception:
@@ -180,8 +172,7 @@ def fmt_brl(x) -> str:
         v = float(x)
     except Exception:
         v = 0.0
-    s = f"{v:,.2f}"
-    s = s.replace(",", "X").replace(".", ",").replace("X", ".")
+    s = f"{v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
     return f"R$ {s}"
 
 def month_label(ym: str) -> str:
@@ -207,6 +198,12 @@ def pick_col(cols_norm: List[str], *names: str) -> Optional[str]:
         if n in cols_norm:
             return n
     return None
+
+def safe_num(v):
+    try:
+        return float(v)
+    except Exception:
+        return 0.0
 
 # ====================== GOOGLE SHEETS CLIENT ======================
 def _load_sa_info() -> dict:
@@ -257,27 +254,22 @@ def read_tab(sheet_id: str, tab: str) -> pd.DataFrame:
     header = [h.strip() for h in values[0]]
     rows = values[1:]
     df = pd.DataFrame(rows, columns=header)
-    # remove colunas vazias
     df = df.loc[:, [c for c in df.columns if str(c).strip() != ""]]
-    # remove linhas totalmente vazias
-    df = df.replace("", np.nan)
-    df = df.dropna(how="all").fillna("")
+    df = df.replace("", np.nan).dropna(how="all").fillna("")
     return df
 
-# ====================== NORMALIZERS (COMPATÍVEL COM SEU EXCEL) ======================
+# ====================== NORMALIZERS ======================
 def normalize_entradas(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return df
-
     df = df.copy()
     cols_norm = [_norm_col(c) for c in df.columns]
     df.columns = cols_norm
 
-    c_data = pick_col(cols_norm, "DATA RECEBIMENTO", "DATA", "RECEBIMENTO")
-    c_venc = pick_col(cols_norm, "DATA VENCIMENTO", "VENCIMENTO")
-    c_val  = pick_col(cols_norm, "VALOR", "R$ ENTRADA", "R$ENTRADA")
+    col_data = pick_col(cols_norm, "DATA RECEBIMENTO", "DATA", "RECEBIMENTO")
+    col_venc = pick_col(cols_norm, "DATA VENCIMENTO", "VENCIMENTO")
+    col_val  = pick_col(cols_norm, "VALOR", "R$ ENTRADA", "R$ENTRADA", "R$")
 
-    # dimensões
     c_cliente = pick_col(cols_norm, "CLIENTE", "CLIENTES")
     c_plano   = pick_col(cols_norm, "PLANO DE CONTAS", "PLANO DE CONTA", "CONTA")
     c_desc    = pick_col(cols_norm, "DESCRICAO", "DESCRIÇÃO", "HISTORICO", "HISTÓRICO", "OBS", "OBSERVACAO", "OBSERVAÇÃO")
@@ -285,11 +277,10 @@ def normalize_entradas(df: pd.DataFrame) -> pd.DataFrame:
     c_area    = pick_col(cols_norm, "AREA")
     c_prod    = pick_col(cols_norm, "PRODUTO")
     c_capt    = pick_col(cols_norm, "CAPTACAO", "CAPTAÇÃO")
-    c_banco   = pick_col(cols_norm, "BANCO")
 
-    df["DATA"] = df[c_data].apply(parse_date_any) if c_data else pd.NaT
-    df["VENCIMENTO"] = df[c_venc].apply(parse_date_any) if c_venc else pd.NaT
-    df["VALOR"] = df[c_val].apply(money_to_float) if c_val else 0.0
+    df["DATA"] = df[col_data].apply(parse_date_any) if col_data else pd.NaT
+    df["VENCIMENTO"] = df[col_venc].apply(parse_date_any) if col_venc else pd.NaT
+    df["VALOR"] = df[col_val].apply(money_to_float) if col_val else 0.0
 
     df["CLIENTE"] = df[c_cliente].astype(str).map(_upper) if c_cliente else ""
     df["PLANO_CONTAS"] = df[c_plano].astype(str).map(_upper) if c_plano else ""
@@ -298,7 +289,6 @@ def normalize_entradas(df: pd.DataFrame) -> pd.DataFrame:
     df["AREA"] = df[c_area].astype(str).map(_upper) if c_area else ""
     df["PRODUTO"] = df[c_prod].astype(str).map(_upper) if c_prod else ""
     df["CAPTACAO"] = df[c_capt].astype(str).map(_upper) if c_capt else ""
-    df["BANCO"] = df[c_banco].astype(str).map(_upper) if c_banco else ""
 
     if (df["CAPTACAO"] == "").all():
         df["CAPTACAO"] = df["CLIENTE"]
@@ -308,21 +298,20 @@ def normalize_entradas(df: pd.DataFrame) -> pd.DataFrame:
     df = df[df["DATA"].notna()].copy()
     df = df[df["VALOR"] != 0].copy()
 
-    keep = ["DATA", "YM", "VENCIMENTO", "CAPTACAO", "CLIENTE", "PLANO_CONTAS", "BANCO", "MEIO", "AREA", "PRODUTO", "DESCRICAO", "VALOR"]
+    keep = ["DATA", "YM", "VENCIMENTO", "CAPTACAO", "CLIENTE", "PLANO_CONTAS", "MEIO", "AREA", "PRODUTO", "DESCRICAO", "VALOR"]
     keep = [c for c in keep if c in df.columns]
     return df[keep].copy()
 
 def normalize_saidas(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return df
-
     df = df.copy()
     cols_norm = [_norm_col(c) for c in df.columns]
     df.columns = cols_norm
 
     c_venc = pick_col(cols_norm, "DATA VENCIMENTO", "VENCIMENTO")
     c_pag  = pick_col(cols_norm, "DATA PAGAMENTO", "PAGAMENTO")
-    c_val  = pick_col(cols_norm, "VALOR", "R$ VALOR", "R$VALOR")
+    c_val  = pick_col(cols_norm, "VALOR", "R$ VALOR", "R$VALOR", "R$")
 
     c_banco = pick_col(cols_norm, "BANCO")
     c_plano = pick_col(cols_norm, "PLANO DE CONTAS", "PLANO DE CONTA", "CONTA")
@@ -355,7 +344,6 @@ def normalize_saidas(df: pd.DataFrame) -> pd.DataFrame:
 def normalize_transferencias(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return df
-
     df = df.copy()
     cols_norm = [_norm_col(c) for c in df.columns]
     df.columns = cols_norm
@@ -363,7 +351,7 @@ def normalize_transferencias(df: pd.DataFrame) -> pd.DataFrame:
     c_data = pick_col(cols_norm, "DATA")
     c_or   = pick_col(cols_norm, "BANCO SAIDA", "BANCO SAÍDA", "ORIGEM")
     c_de   = pick_col(cols_norm, "BANCO ENTRADA", "DESTINO")
-    c_val  = pick_col(cols_norm, "VALOR", "R$ VALOR", "R$VALOR")
+    c_val  = pick_col(cols_norm, "VALOR", "R$ VALOR", "R$VALOR", "R$")
     c_desc = pick_col(cols_norm, "DESCRICAO", "DESCRIÇÃO")
 
     df["DATA"] = df[c_data].apply(parse_date_any) if c_data else pd.NaT
@@ -390,22 +378,20 @@ def compute_fluxo_caixa(df_ent: pd.DataFrame, df_sai: pd.DataFrame) -> pd.DataFr
     base["YM"] = base["DATA"].apply(to_ym)
     return base
 
-def compute_venc_pag(df_sai: pd.DataFrame) -> pd.DataFrame:
-    """Resumo diário: Vencimentos vs Pagamentos (para comparar Pag x Venc)."""
-    if df_sai.empty:
-        return pd.DataFrame(columns=["DATA","VENCIMENTOS","PAGAMENTOS","ABERTO"])
-    venc = df_sai[df_sai["VENCIMENTO"].notna()].groupby("VENCIMENTO")["VALOR"].sum().reset_index().rename(columns={"VENCIMENTO":"DATA","VALOR":"VENCIMENTOS"})
-    pag = df_sai[df_sai["PAGAMENTO"].notna()].groupby("PAGAMENTO")["VALOR"].sum().reset_index().rename(columns={"PAGAMENTO":"DATA","VALOR":"PAGAMENTOS"})
-    aberto = df_sai[df_sai["PAGAMENTO"].isna() & df_sai["VENCIMENTO"].notna()].groupby("VENCIMENTO")["VALOR"].sum().reset_index().rename(columns={"VENCIMENTO":"DATA","VALOR":"ABERTO"})
-    out = venc.merge(pag, on="DATA", how="outer").merge(aberto, on="DATA", how="outer").fillna(0.0)
-    out = out.sort_values("DATA")
-    return out
+def add_value_labels_bar(chart, x_field: str, y_field: str, fmt: str = ",.0f", dy: int = -6):
+    txt = chart.mark_text(dy=dy).encode(
+        text=alt.Text(y_field, format=fmt)
+    )
+    return chart + txt
 
-def compute_top(df: pd.DataFrame, col: str, n: int = 12) -> pd.DataFrame:
-    if df.empty or col not in df.columns:
-        return pd.DataFrame(columns=[col, "VALOR"])
-    g = df.groupby(col)["VALOR"].sum().reset_index().sort_values("VALOR", ascending=False).head(n)
-    return g
+def last_point_label(df: pd.DataFrame, xcol: str, ycol: str, label: str = None):
+    if df.empty:
+        return pd.DataFrame(columns=[xcol, ycol, "LABEL"])
+    d = df.sort_values(xcol).tail(1).copy()
+    d["LABEL"] = d[ycol].apply(lambda v: fmt_brl(v) if isinstance(v, (int,float,np.number)) else str(v))
+    if label is not None:
+        d["SÉRIE"] = label
+    return d
 
 # ====================== LOAD DATA ======================
 st.sidebar.markdown(f"### {COMPANY_NAME}")
@@ -489,7 +475,7 @@ def apply_filters():
 
 ent_f, sai_f, trf_f = apply_filters()
 
-# ====================== KPIs ======================
+# ====================== KPIs (geral do período filtrado) ======================
 ent_total = float(ent_f["VALOR"].sum()) if (not ent_f.empty and "VALOR" in ent_f.columns) else 0.0
 sai_total = float(sai_f["VALOR"].sum()) if (not sai_f.empty and "VALOR" in sai_f.columns) else 0.0
 
@@ -508,7 +494,7 @@ if page.startswith("📊"):
     st.markdown("## Resumo do período")
     cA, cB, cC, cD, cE = st.columns(5)
     with cA: st_kpi("Receita Total", fmt_brl(ent_total), sub=f"Mês {sel_month_label}")
-    with cB: st_kpi("Despesas", fmt_brl(desp_total), sub="Saídas sem investimentos")
+    with cB: st_kpi("Despesas", fmt_brl(desp_total), sub="Saídas (sem investimentos)")
     with cC: st_kpi("Investimentos", fmt_brl(inv_total), sub="Regra: CONTA contém 'INVEST'", badge=("revisável", "warn"))
     with cD: st_kpi("Total de Saídas", fmt_brl(sai_total), sub="Despesas + investimentos")
     with cE:
@@ -525,15 +511,13 @@ if page.startswith("📊"):
     evo["Mês"] = evo["YM"].map(month_label)
     evo_melt = evo.melt(id_vars=["YM","Mês"], value_vars=["Receitas","Saídas","Resultado"], var_name="Métrica", value_name="Valor")
 
-    st.altair_chart(
-        alt.Chart(evo_melt).mark_bar().encode(
-            x=alt.X("Mês:N", sort=list(evo["Mês"]), title=""),
-            y=alt.Y("Valor:Q", title="R$"),
-            color=alt.Color("Métrica:N", legend=alt.Legend(title="")),
-            tooltip=["Mês","Métrica",alt.Tooltip("Valor:Q", format=",.2f")],
-        ).properties(height=320),
-        use_container_width=True
-    )
+    bars = alt.Chart(evo_melt).mark_bar().encode(
+        x=alt.X("Mês:N", sort=list(evo["Mês"]), title=""),
+        y=alt.Y("Valor:Q", title="R$"),
+        color=alt.Color("Métrica:N", legend=alt.Legend(title="")),
+        tooltip=["Mês","Métrica",alt.Tooltip("Valor:Q", format=",.2f")],
+    ).properties(height=320)
+    st.altair_chart(bars, use_container_width=True)
 
     st.markdown("<div class='hr'></div>", unsafe_allow_html=True)
     st.markdown("## Detalhamento (amostra)")
@@ -552,16 +536,40 @@ if page.startswith("📊"):
 elif page.startswith("💚"):
     st.markdown("<div class='hr'></div>", unsafe_allow_html=True)
     st.markdown("## Entradas — visão analítica")
+
+    # cards
+    qtd = int(len(ent_f)) if not ent_f.empty else 0
+    dias = int(ent_f["DATA"].nunique()) if (not ent_f.empty and "DATA" in ent_f.columns) else 0
+    media_dia = (ent_total / dias) if dias > 0 else 0.0
+    maior_dia = 0.0
+    if not ent_f.empty:
+        maior_dia = float(ent_f.groupby("DATA")["VALOR"].sum().max())
+    cA, cB, cC, cD = st.columns(4)
+    with cA: st_kpi("Total Entradas", fmt_brl(ent_total), sub=f"{qtd} lançamentos")
+    with cB: st_kpi("Média por dia", fmt_brl(media_dia), sub=f"{dias} dias com movimento")
+    with cC: st_kpi("Maior dia", fmt_brl(maior_dia), sub="Pico de entradas no período")
+    with cD:
+        top_capt = ""
+        if (not ent_f.empty) and ("CAPTACAO" in ent_f.columns):
+            s = ent_f.groupby("CAPTACAO")["VALOR"].sum().sort_values(ascending=False)
+            if len(s) > 0:
+                top_capt = f"{s.index[0]} • {fmt_brl(s.iloc[0])}"
+        st_kpi("Top captação", top_capt or "-", sub="Maior origem no período")
+
     daily = ent_f.groupby("DATA")["VALOR"].sum().reset_index().sort_values("DATA") if not ent_f.empty else pd.DataFrame()
     if not daily.empty:
-        st.altair_chart(
-            alt.Chart(daily).mark_line(point=True).encode(
-                x=alt.X("DATA:T", title="Data"),
-                y=alt.Y("VALOR:Q", title="R$"),
-                tooltip=[alt.Tooltip("DATA:T", title="Data"), alt.Tooltip("VALOR:Q", format=",.2f", title="R$")],
-            ).properties(height=320),
-            use_container_width=True
+        line = alt.Chart(daily).mark_line(point=True).encode(
+            x=alt.X("DATA:T", title="Data", axis=alt.Axis(format="%d/%m")),
+            y=alt.Y("VALOR:Q", title="R$"),
+            tooltip=[alt.Tooltip("DATA:T", title="Data", format="%d/%m/%Y"), alt.Tooltip("VALOR:Q", format=",.2f", title="R$")],
+        ).properties(height=320)
+        # rótulo: último ponto
+        last = last_point_label(daily, "DATA", "VALOR")
+        lbl = alt.Chart(last).mark_text(align="left", dx=8, dy=-8).encode(
+            x="DATA:T", y="VALOR:Q", text="LABEL:N"
         )
+        st.altair_chart(line + lbl, use_container_width=True)
+
     out = ent_f.sort_values("DATA", ascending=False).copy() if not ent_f.empty else ent_f
     if not out.empty:
         out["R$"] = out["VALOR"].map(fmt_brl)
@@ -570,16 +578,39 @@ elif page.startswith("💚"):
 elif page.startswith("💸"):
     st.markdown("<div class='hr'></div>", unsafe_allow_html=True)
     st.markdown("## Saídas — visão analítica")
+
+    qtd = int(len(sai_f)) if not sai_f.empty else 0
+    dias = int(sai_f["DATA_REF"].nunique()) if (not sai_f.empty and "DATA_REF" in sai_f.columns) else 0
+    media_dia = (sai_total / dias) if dias > 0 else 0.0
+    maior_dia = 0.0
+    if not sai_f.empty:
+        maior_dia = float(sai_f.groupby("DATA_REF")["VALOR"].sum().max())
+    aberto = 0.0
+    if (not sai_f.empty) and ("VENCIMENTO" in sai_f.columns):
+        mask_aberto = sai_f["PAGAMENTO"].isna() if "PAGAMENTO" in sai_f.columns else pd.Series([False]*len(sai_f))
+        aberto = float(sai_f.loc[mask_aberto, "VALOR"].sum()) if "VALOR" in sai_f.columns else 0.0
+
+    cA, cB, cC, cD = st.columns(4)
+    with cA: st_kpi("Total Saídas", fmt_brl(sai_total), sub=f"{qtd} lançamentos")
+    with cB: st_kpi("Média por dia", fmt_brl(media_dia), sub=f"{dias} dias com movimento")
+    with cC: st_kpi("Maior dia", fmt_brl(maior_dia), sub="Pico de saídas no período")
+    with cD:
+        badge = ("atenção", "warn") if aberto > 0 else ("ok", "good")
+        st_kpi("Em aberto", fmt_brl(aberto), sub="Saídas sem pagamento", badge=badge)
+
     daily = sai_f.groupby("DATA_REF")["VALOR"].sum().reset_index().sort_values("DATA_REF") if not sai_f.empty else pd.DataFrame()
     if not daily.empty:
-        st.altair_chart(
-            alt.Chart(daily).mark_line(point=True).encode(
-                x=alt.X("DATA_REF:T", title="Data"),
-                y=alt.Y("VALOR:Q", title="R$"),
-                tooltip=[alt.Tooltip("DATA_REF:T", title="Data"), alt.Tooltip("VALOR:Q", format=",.2f", title="R$")],
-            ).properties(height=320),
-            use_container_width=True
+        line = alt.Chart(daily).mark_line(point=True).encode(
+            x=alt.X("DATA_REF:T", title="Data", axis=alt.Axis(format="%d/%m")),
+            y=alt.Y("VALOR:Q", title="R$"),
+            tooltip=[alt.Tooltip("DATA_REF:T", title="Data", format="%d/%m/%Y"), alt.Tooltip("VALOR:Q", format=",.2f", title="R$")],
+        ).properties(height=320)
+        last = last_point_label(daily, "DATA_REF", "VALOR")
+        lbl = alt.Chart(last).mark_text(align="left", dx=8, dy=-8).encode(
+            x="DATA_REF:T", y="VALOR:Q", text="LABEL:N"
         )
+        st.altair_chart(line + lbl, use_container_width=True)
+
     out = sai_f.sort_values("DATA_REF", ascending=False).copy() if not sai_f.empty else sai_f
     if not out.empty:
         out["R$"] = out["VALOR"].map(fmt_brl)
@@ -591,7 +622,7 @@ elif page.startswith("🟨"):
     inv = sai_f.loc[inv_mask].copy() if not sai_f.empty else pd.DataFrame()
     c1, c2 = st.columns(2)
     with c1: st_kpi("Total investimentos", fmt_brl(inv["VALOR"].sum() if not inv.empty else 0))
-    with c2: st_kpi("Lançamentos", str(int(len(inv))) if not inv.empty else "0")
+    with c2: st_kpi("Lançamentos", str(int(len(inv))))
     inv_out = inv.sort_values("DATA_REF", ascending=False).copy() if not inv.empty else inv
     if not inv_out.empty:
         inv_out["R$"] = inv_out["VALOR"].map(fmt_brl)
@@ -605,106 +636,227 @@ elif page.startswith("💧"):
     if fluxo.empty:
         st.info("Sem dados suficientes para fluxo.")
     else:
-        # KPIs do fluxo
-        cK1, cK2, cK3, cK4, cK5 = st.columns(5)
-        with cK1: st_kpi("Entradas (período)", fmt_brl(fluxo["ENTRADAS"].sum()))
-        with cK2: st_kpi("Saídas (período)", fmt_brl(fluxo["SAIDAS"].sum()))
-        with cK3:
-            saldo = float(fluxo["SALDO_DIA"].sum())
-            badge = ("positivo", "good") if saldo >= 0 else ("negativo", "bad")
-            st_kpi("Saldo do período", fmt_brl(saldo), badge=badge)
-        # contas em aberto (saídas sem pagamento)
-        aberto = 0.0
-        vencidas = 0.0
-        if not sai_f.empty and "PAGAMENTO" in sai_f.columns and "VENCIMENTO" in sai_f.columns:
-            aberto = float(sai_f[sai_f["PAGAMENTO"].isna()]["VALOR"].sum())
-            hoje = date.today()
-            vencidas = float(sai_f[(sai_f["PAGAMENTO"].isna()) & (sai_f["VENCIMENTO"].notna()) & (sai_f["VENCIMENTO"] < hoje)]["VALOR"].sum())
-        with cK4: st_kpi("Contas a pagar (aberto)", fmt_brl(aberto))
-        with cK5: st_kpi("Vencidas em aberto", fmt_brl(vencidas), badge=("atenção", "warn") if vencidas > 0 else ("ok", "good"))
-
-        st.markdown("<div class='hr'></div>", unsafe_allow_html=True)
-
-        # 1) Linhas: entradas/saídas/saldo-dia
+        # 1) Linhas: Entradas / Saídas / Saldo do dia
         melt = fluxo.melt(id_vars=["DATA"], value_vars=["ENTRADAS","SAIDAS","SALDO_DIA"], var_name="Métrica", value_name="Valor")
-        st.altair_chart(
-            alt.Chart(melt).mark_line(point=True).encode(
-                x=alt.X("DATA:T", title="Data"),
-                y=alt.Y("Valor:Q", title="R$"),
-                color=alt.Color("Métrica:N", legend=alt.Legend(title="")),
-                tooltip=[alt.Tooltip("DATA:T", title="Data"), "Métrica", alt.Tooltip("Valor:Q", format=",.2f")]
-            ).properties(height=320),
-            use_container_width=True
+        melt["Métrica"] = melt["Métrica"].replace({"ENTRADAS":"Entradas","SAIDAS":"Saídas","SALDO_DIA":"Saldo do dia"})
+        chart = alt.Chart(melt).mark_line(point=True).encode(
+            x=alt.X("DATA:T", title="Data", axis=alt.Axis(format="%d/%m")),
+            y=alt.Y("Valor:Q", title="R$"),
+            color=alt.Color("Métrica:N", legend=alt.Legend(title="")),
+            tooltip=[alt.Tooltip("DATA:T", title="Data", format="%d/%m/%Y"), "Métrica", alt.Tooltip("Valor:Q", format=",.2f", title="R$")]
+        ).properties(height=320)
+
+        # rótulos: último ponto de cada métrica
+        last_rows = []
+        for met, col in [("Entradas","ENTRADAS"),("Saídas","SAIDAS"),("Saldo do dia","SALDO_DIA")]:
+            df_tmp = fluxo[["DATA", col]].rename(columns={col:"VAL"})
+            df_last = last_point_label(df_tmp.rename(columns={"VAL":"VALOR"}), "DATA", "VALOR", label=met)
+            if not df_last.empty:
+                df_last = df_last.rename(columns={"LABEL":"RÓTULO"})
+                df_last["Métrica"] = met
+                df_last["Valor"] = df_last["VALOR"]
+                last_rows.append(df_last[["DATA","Métrica","Valor","RÓTULO"]])
+        last_df = pd.concat(last_rows, ignore_index=True) if last_rows else pd.DataFrame(columns=["DATA","Métrica","Valor","RÓTULO"])
+        lbl = alt.Chart(last_df).mark_text(align="left", dx=8, dy=-8).encode(
+            x="DATA:T", y="Valor:Q", color=alt.Color("Métrica:N", legend=None), text="RÓTULO:N"
         )
+        st.altair_chart(chart + lbl, use_container_width=True)
+
+        # cards rápidos
+        st.markdown("<div class='hr'></div>", unsafe_allow_html=True)
+        cA, cB, cC, cD = st.columns(4)
+        with cA: st_kpi("Entradas", fmt_brl(fluxo["ENTRADAS"].sum()), sub="Somatório no período")
+        with cB: st_kpi("Saídas", fmt_brl(fluxo["SAIDAS"].sum()), sub="Somatório no período")
+        with cC:
+            saldo = float(fluxo["SALDO_DIA"].sum())
+            badge = ("positivo","good") if saldo >= 0 else ("negativo","bad")
+            st_kpi("Saldo no período", fmt_brl(saldo), sub="Entradas - Saídas", badge=badge)
+        with cD:
+            final = float(fluxo["SALDO_ACUM"].iloc[-1])
+            badge = ("positivo","good") if final >= 0 else ("negativo","bad")
+            st_kpi("Saldo acumulado (final)", fmt_brl(final), sub="Cumulativo", badge=badge)
 
         # 2) Saldo acumulado
+        st.markdown("<div class='hr'></div>", unsafe_allow_html=True)
         st.markdown("### Saldo acumulado")
-        st.altair_chart(
-            alt.Chart(fluxo).mark_line(point=True).encode(
-                x=alt.X("DATA:T", title="Data"),
-                y=alt.Y("SALDO_ACUM:Q", title="R$"),
-                tooltip=[alt.Tooltip("DATA:T", title="Data"), alt.Tooltip("SALDO_ACUM:Q", title="Saldo acumulado", format=",.2f")],
-            ).properties(height=260),
-            use_container_width=True
-        )
+        acc = fluxo[["DATA","SALDO_ACUM"]].copy()
+        acc_line = alt.Chart(acc).mark_line(point=True).encode(
+            x=alt.X("DATA:T", title="Data", axis=alt.Axis(format="%d/%m")),
+            y=alt.Y("SALDO_ACUM:Q", title="R$"),
+            tooltip=[alt.Tooltip("DATA:T", title="Data", format="%d/%m/%Y"), alt.Tooltip("SALDO_ACUM:Q", format=",.2f", title="R$")]
+        ).properties(height=260)
+        last_acc = last_point_label(acc.rename(columns={"SALDO_ACUM":"VALOR"}), "DATA", "VALOR")
+        lbl_acc = alt.Chart(last_acc).mark_text(align="left", dx=8, dy=-8).encode(x="DATA:T", y="VALOR:Q", text="LABEL:N")
+        st.altair_chart(acc_line + lbl_acc, use_container_width=True)
 
-        # 3) Pag x Venc (saídas) — vencimentos vs pagamentos
-        st.markdown("### Pagamentos x Vencimentos (saídas)")
-        pv = compute_venc_pag(sai_f)
-        if pv.empty:
-            st.caption("Sem dados de vencimento/pagamento suficientes.")
-        else:
-            pv_melt = pv.melt(id_vars=["DATA"], value_vars=["VENCIMENTOS","PAGAMENTOS","ABERTO"], var_name="Métrica", value_name="Valor")
-            st.altair_chart(
-                alt.Chart(pv_melt).mark_bar().encode(
-                    x=alt.X("DATA:T", title="Data"),
-                    y=alt.Y("Valor:Q", title="R$"),
-                    color=alt.Color("Métrica:N", legend=alt.Legend(title="")),
-                    tooltip=[alt.Tooltip("DATA:T", title="Data"), "Métrica", alt.Tooltip("Valor:Q", format=",.2f")],
-                ).properties(height=320),
-                use_container_width=True
+        # 3) Pagamentos x Vencimentos (saídas)
+        if (not sai_f.empty) and ("VENCIMENTO" in sai_f.columns):
+            st.markdown("<div class='hr'></div>", unsafe_allow_html=True)
+            st.markdown("### Pagamentos x Vencimentos (saídas)")
+            dfp = sai_f.copy()
+            dfp["VENC"] = dfp["VENCIMENTO"].apply(parse_date_any)
+            dfp["PAG"] = dfp["PAGAMENTO"].apply(parse_date_any) if "PAGAMENTO" in dfp.columns else pd.NaT
+
+            # filtra pelo período (usando vencimento/pagamento)
+            if dt_ini and dt_fim:
+                dfp = dfp[(dfp["VENC"].between(dt_ini, dt_fim)) | (dfp["PAG"].between(dt_ini, dt_fim))].copy()
+
+            venc = dfp[dfp["VENC"].notna()].groupby("VENC")["VALOR"].sum().reset_index().rename(columns={"VENC":"DATA","VALOR":"Vencimentos"})
+            pag = dfp[dfp["PAG"].notna()].groupby("PAG")["VALOR"].sum().reset_index().rename(columns={"PAG":"DATA","VALOR":"Pagamentos"})
+            aberto = dfp[(dfp["VENC"].notna()) & ((dfp["PAG"].isna()) | (dfp["PAG"] > (dt_fim if dt_fim else date.max)))].groupby("VENC")["VALOR"].sum().reset_index().rename(columns={"VENC":"DATA","VALOR":"Em aberto"})
+
+            pv = venc.merge(pag, on="DATA", how="outer").merge(aberto, on="DATA", how="outer").fillna(0.0).sort_values("DATA")
+            pv_melt = pv.melt(id_vars=["DATA"], value_vars=["Em aberto","Pagamentos","Vencimentos"], var_name="Métrica", value_name="Valor")
+
+            bars = alt.Chart(pv_melt).mark_bar().encode(
+                x=alt.X("DATA:T", title="Data", axis=alt.Axis(format="%d/%m")),
+                y=alt.Y("Valor:Q", title="R$"),
+                color=alt.Color("Métrica:N", legend=alt.Legend(title="")),
+                tooltip=[alt.Tooltip("DATA:T", title="Data", format="%d/%m/%Y"), "Métrica", alt.Tooltip("Valor:Q", format=",.2f", title="R$")]
+            ).properties(height=320)
+            # rótulo (só quando valor > 0 pra não poluir)
+            txt = alt.Chart(pv_melt[pv_melt["Valor"] > 0]).mark_text(dy=-6).encode(
+                x="DATA:T", y="Valor:Q", color=alt.Color("Métrica:N", legend=None),
+                text=alt.Text("Valor:Q", format=",.0f")
             )
+            st.altair_chart(bars + txt, use_container_width=True)
 
+        # 4) Análise Vertical & Horizontal (estilo AH/AV da base)
         st.markdown("<div class='hr'></div>", unsafe_allow_html=True)
+        st.markdown("## Análise Vertical e Horizontal")
 
-        # 4) Top categorias (aproximação da visão analítica do "Pag x Venc")
-        st.markdown("### Onde está o dinheiro (Top categorias)")
-        cT1, cT2 = st.columns(2)
-        with cT1:
-            top_ent = compute_top(ent_f, "PLANO_CONTAS", n=12)
-            if top_ent.empty:
-                st.caption("Sem plano de contas nas entradas.")
-            else:
-                st.altair_chart(
-                    alt.Chart(top_ent).mark_bar().encode(
-                        y=alt.Y("PLANO_CONTAS:N", sort="-x", title=""),
-                        x=alt.X("VALOR:Q", title="R$"),
-                        tooltip=["PLANO_CONTAS", alt.Tooltip("VALOR:Q", format=",.2f")],
-                    ).properties(height=360),
-                    use_container_width=True
-                )
+        # base mensal (últimos 6 meses para ficar legível)
+        all_months = sorted(list(set([m for m in df_ent.get("YM", []) if m] + [m for m in df_sai.get("YM", []) if m])))
+        last_n = 6
+        sel_months = all_months[-last_n:] if len(all_months) > last_n else all_months
 
-        with cT2:
-            top_sai = compute_top(sai_f, "CONTA", n=12)
-            if top_sai.empty:
-                st.caption("Sem conta/plano nas saídas.")
-            else:
-                st.altair_chart(
-                    alt.Chart(top_sai).mark_bar().encode(
-                        y=alt.Y("CONTA:N", sort="-x", title=""),
-                        x=alt.X("VALOR:Q", title="R$"),
-                        tooltip=["CONTA", alt.Tooltip("VALOR:Q", format=",.2f")],
-                    ).properties(height=360),
-                    use_container_width=True
-                )
+        def _monthly_table(df: pd.DataFrame, ym_col: str, acc_col: str, val_col: str, kind: str):
+            if df.empty or ym_col not in df.columns or val_col not in df.columns:
+                return pd.DataFrame()
+            if acc_col not in df.columns:
+                df = df.copy()
+                df[acc_col] = "SEM_CONTA"
+            t = df[df[ym_col].isin(sel_months)].groupby([acc_col, ym_col])[val_col].sum().reset_index()
+            piv = t.pivot(index=acc_col, columns=ym_col, values=val_col).fillna(0.0)
+            piv.index.name = "CONTA"
+            piv = piv.reset_index()
+            piv["TIPO"] = kind
+            return piv
 
-        st.markdown("<div class='hr'></div>", unsafe_allow_html=True)
+        ent_piv = _monthly_table(df_ent, "YM", "PLANO_CONTAS", "VALOR", "Entradas")
+        sai_piv = _monthly_table(df_sai, "YM", "CONTA", "VALOR", "Saídas")
+        if not sai_piv.empty:
+            # Saídas como valores positivos para comparação de participação
+            pass
 
-        # 5) Detalhamento rápido (opcional)
-        with st.expander("Detalhamento do fluxo (tabela diária)", expanded=False):
-            show = fluxo.copy()
-            for c in ["ENTRADAS","SAIDAS","SALDO_DIA","SALDO_ACUM"]:
-                show[c] = show[c].map(fmt_brl)
+        combo = pd.concat([ent_piv, sai_piv], ignore_index=True) if (not ent_piv.empty or not sai_piv.empty) else pd.DataFrame()
+
+        if combo.empty or len(sel_months) < 2:
+            st.caption("Sem histórico suficiente para calcular análise vertical/horizontal.")
+        else:
+            # mantém top contas por último mês (por tipo)
+            last_m = sel_months[-1]
+            def _top(df, typ, n=8):
+                sub = df[df["TIPO"]==typ].copy()
+                if sub.empty:
+                    return sub
+                sub["__LAST"] = sub[last_m]
+                return sub.sort_values("__LAST", ascending=False).head(n).drop(columns=["__LAST"])
+            top_ent = _top(combo, "Entradas", 8)
+            top_sai = _top(combo, "Saídas", 8)
+
+            def _calc_ah_av(df_typ: pd.DataFrame) -> pd.DataFrame:
+                df_typ = df_typ.copy()
+                # total por mês (para AV%)
+                totals = {m: float(df_typ[m].sum()) for m in sel_months}
+                # AH% do último mês vs mês anterior
+                prev_m = sel_months[-2]
+                df_typ["AH_%"] = df_typ.apply(lambda r: ((r[last_m]/r[prev_m]) - 1.0) if r[prev_m] != 0 else np.nan, axis=1)
+                df_typ["AV_%"] = df_typ.apply(lambda r: (r[last_m]/totals[last_m]) if totals[last_m] != 0 else np.nan, axis=1)
+                return df_typ, totals
+
+            ent_calc, ent_totals = _calc_ah_av(top_ent) if not top_ent.empty else (pd.DataFrame(), {})
+            sai_calc, sai_totals = _calc_ah_av(top_sai) if not top_sai.empty else (pd.DataFrame(), {})
+
+            # --- Vertical (composição do mês selecionado) ---
+            v1, v2 = st.columns(2)
+            with v1:
+                st.markdown("### Vertical — composição de Entradas (mês selecionado)")
+                if ent_calc.empty:
+                    st.caption("Sem dados de entradas.")
+                else:
+                    d = ent_calc[["CONTA", last_m]].copy().rename(columns={last_m:"Valor"})
+                    total = float(d["Valor"].sum()) if len(d) else 0.0
+                    d["%"] = d["Valor"].apply(lambda x: (x/total) if total else 0.0)
+                    bars = alt.Chart(d).mark_bar().encode(
+                        x=alt.X("%:Q", title="% do total", axis=alt.Axis(format=".0%")),
+                        y=alt.Y("CONTA:N", sort='-x', title=""),
+                        tooltip=["CONTA", alt.Tooltip("Valor:Q", format=",.2f"), alt.Tooltip("%:Q", format=".1%")]
+                    ).properties(height=320)
+                    txt = alt.Chart(d).mark_text(dx=6, align="left").encode(
+                        x="%:Q", y=alt.Y("CONTA:N", sort='-x'),
+                        text=alt.Text("%:Q", format=".0%")
+                    )
+                    st.altair_chart(bars + txt, use_container_width=True)
+
+            with v2:
+                st.markdown("### Vertical — composição de Saídas (mês selecionado)")
+                if sai_calc.empty:
+                    st.caption("Sem dados de saídas.")
+                else:
+                    d = sai_calc[["CONTA", last_m]].copy().rename(columns={last_m:"Valor"})
+                    total = float(d["Valor"].sum()) if len(d) else 0.0
+                    d["%"] = d["Valor"].apply(lambda x: (x/total) if total else 0.0)
+                    bars = alt.Chart(d).mark_bar().encode(
+                        x=alt.X("%:Q", title="% do total", axis=alt.Axis(format=".0%")),
+                        y=alt.Y("CONTA:N", sort='-x', title=""),
+                        tooltip=["CONTA", alt.Tooltip("Valor:Q", format=",.2f"), alt.Tooltip("%:Q", format=".1%")]
+                    ).properties(height=320)
+                    txt = alt.Chart(d).mark_text(dx=6, align="left").encode(
+                        x="%:Q", y=alt.Y("CONTA:N", sort='-x'),
+                        text=alt.Text("%:Q", format=".0%")
+                    )
+                    st.altair_chart(bars + txt, use_container_width=True)
+
+            # --- Horizontal (evolução por mês) ---
+            st.markdown("<div class='hr'></div>", unsafe_allow_html=True)
+            st.markdown("### Horizontal — evolução (últimos meses)")
+
+            # totais gerais por mês
+            tot = pd.DataFrame({"YM": sel_months})
+            tot["Entradas"] = tot["YM"].map(lambda m: float(df_ent[df_ent["YM"]==m]["VALOR"].sum()) if not df_ent.empty else 0.0)
+            tot["Saídas"] = tot["YM"].map(lambda m: float(df_sai[df_sai["YM"]==m]["VALOR"].sum()) if not df_sai.empty else 0.0)
+            tot["Resultado"] = tot["Entradas"] - tot["Saídas"]
+            tot["Mês"] = tot["YM"].map(month_label)
+
+            tot_melt = tot.melt(id_vars=["YM","Mês"], value_vars=["Entradas","Saídas","Resultado"], var_name="Métrica", value_name="Valor")
+            line = alt.Chart(tot_melt).mark_line(point=True).encode(
+                x=alt.X("Mês:N", sort=list(tot["Mês"]), title=""),
+                y=alt.Y("Valor:Q", title="R$"),
+                color=alt.Color("Métrica:N", legend=alt.Legend(title="")),
+                tooltip=["Mês","Métrica",alt.Tooltip("Valor:Q", format=",.2f")]
+            ).properties(height=320)
+            st.altair_chart(line, use_container_width=True)
+
+            # tabela AH/AV consolidada (Entradas + Saídas)
+            st.markdown("### Tabela (AH/AV) — top contas")
+            def _table_out(df_calc: pd.DataFrame, typ: str) -> pd.DataFrame:
+                if df_calc.empty:
+                    return pd.DataFrame()
+                out = df_calc[["CONTA"] + sel_months + ["AH_%","AV_%"]].copy()
+                out.insert(0, "TIPO", typ)
+                # formatação amigável
+                for m in sel_months:
+                    out[m] = out[m].apply(lambda v: safe_num(v))
+                out["AH_%"] = out["AH_%"].apply(lambda v: "" if pd.isna(v) else f"{v*100:.1f}%")
+                out["AV_%"] = out["AV_%"].apply(lambda v: "" if pd.isna(v) else f"{v*100:.1f}%")
+                return out
+
+            table = pd.concat([_table_out(ent_calc, "Entradas"), _table_out(sai_calc, "Saídas")], ignore_index=True)
+            # exibe com BRL nos meses
+            show = table.copy()
+            for m in sel_months:
+                show[m] = show[m].apply(fmt_brl)
             st.dataframe(show, use_container_width=True, hide_index=True)
 
 elif page.startswith("🧾"):
@@ -713,20 +865,20 @@ elif page.startswith("🧾"):
     if sai_f.empty:
         st.info("Sem saídas no período.")
     else:
-        by_bank_out = sai_f.groupby("BANCO")["VALOR"].sum().reset_index().rename(columns={"VALOR":"SAÍDAS"}) if "BANCO" in sai_f.columns else pd.DataFrame(columns=["BANCO","SAÍDAS"])
+        by_bank_out = sai_f.groupby("BANCO")["VALOR"].sum().reset_index().rename(columns={"VALOR":"Saídas"}) if "BANCO" in sai_f.columns else pd.DataFrame(columns=["BANCO","Saídas"])
         if not trf_f.empty:
-            trf_out = trf_f.groupby("ORIGEM")["VALOR"].sum().reset_index().rename(columns={"ORIGEM":"BANCO","VALOR":"TRANSFER_OUT"})
-            trf_in  = trf_f.groupby("DESTINO")["VALOR"].sum().reset_index().rename(columns={"DESTINO":"BANCO","VALOR":"TRANSFER_IN"})
+            trf_out = trf_f.groupby("ORIGEM")["VALOR"].sum().reset_index().rename(columns={"ORIGEM":"BANCO","VALOR":"Transfer. Saída"})
+            trf_in  = trf_f.groupby("DESTINO")["VALOR"].sum().reset_index().rename(columns={"DESTINO":"BANCO","VALOR":"Transfer. Entrada"})
         else:
-            trf_out = pd.DataFrame(columns=["BANCO","TRANSFER_OUT"])
-            trf_in  = pd.DataFrame(columns=["BANCO","TRANSFER_IN"])
+            trf_out = pd.DataFrame(columns=["BANCO","Transfer. Saída"])
+            trf_in  = pd.DataFrame(columns=["BANCO","Transfer. Entrada"])
 
         conc = by_bank_out.merge(trf_out, on="BANCO", how="outer").merge(trf_in, on="BANCO", how="outer").fillna(0.0)
-        conc["MOV_LIQ_TRF"] = conc["TRANSFER_IN"] - conc["TRANSFER_OUT"]
-        conc = conc.sort_values("SAÍDAS", ascending=False)
+        conc["Mov. Líq. Transferências"] = conc["Transfer. Entrada"] - conc["Transfer. Saída"]
+        conc = conc.sort_values("Saídas", ascending=False)
 
         conc_show = conc.copy()
-        for c in ["SAÍDAS","TRANSFER_OUT","TRANSFER_IN","MOV_LIQ_TRF"]:
+        for c in ["Saídas","Transfer. Saída","Transfer. Entrada","Mov. Líq. Transferências"]:
             conc_show[c] = conc_show[c].map(fmt_brl)
         st.dataframe(conc_show, use_container_width=True, hide_index=True)
 
