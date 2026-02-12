@@ -930,47 +930,37 @@ elif page.startswith("💚"):
     out = ent_f.sort_values("DATA", ascending=False).copy() if not ent_f.empty else ent_f
     if not out.empty:
         out["R$"] = out["VALOR"].map(fmt_brl)
-    st.dataframe(out.drop(columns=["VALOR"], errors="ignore"), use_container_width=True, hide_index=True)
-    # -------- Análise Vertical & Horizontal (Entradas) --------
-    st.markdown("<div class='hr'></div>", unsafe_allow_html=True)
-    st.markdown("## Análise Vertical e Horizontal — Entradas")
-
-    # meses do histórico (até o último mês selecionado)
-    hist_months_all = [m for m in months if m <= ym_focus]
+    # meses do histórico (apenas ENTRADAS, para não pegar meses que só existem em SAÍDAS)
+    ent_months = sorted([m for m in df_ent.get('YM', []).unique().tolist() if m]) if not df_ent.empty else []
+    hist_months_all = [m for m in ent_months if m <= ym_focus] if ent_months else []
     last_n = 6
     hist_months = hist_months_all[-last_n:] if len(hist_months_all) > last_n else hist_months_all
 
-    ent_hist = df_ent.copy()
-    if capt_sel and ("CAPTACAO" in ent_hist.columns):
-        ent_hist = ent_hist[ent_hist["CAPTACAO"].isin([_upper(x) for x in capt_sel])].copy()
+    ent_hist = df_ent[df_ent['YM'].isin(hist_months)].copy() if (not df_ent.empty and hist_months) else pd.DataFrame()
 
     if ent_hist.empty or len(hist_months) < 2:
-        st.caption("Sem histórico suficiente para calcular a análise (precisa de pelo menos 2 meses).")
+        st.caption('Sem histórico suficiente de ENTRADAS para calcular análise vertical/horizontal.')
     else:
         last_m = hist_months[-1]
         prev_m = hist_months[-2]
 
-        t = (
-            ent_hist[ent_hist["YM"].isin(hist_months)]
-            .groupby(["PLANO_CONTAS", "YM"])["VALOR"]
-            .sum()
-            .reset_index()
-        )
-        piv = t.pivot(index="PLANO_CONTAS", columns="YM", values="VALOR").fillna(0.0)
-        piv = piv.reset_index().rename(columns={"PLANO_CONTAS": "CONTA"})
+        # pivot por conta x mês (garante que todas as colunas dos meses existam)
+        t = ent_hist.groupby(['PLANO_CONTAS', 'YM'])['VALOR'].sum().reset_index()
+        piv = t.pivot(index='PLANO_CONTAS', columns='YM', values='VALOR').fillna(0.0)
+        piv = piv.reindex(columns=hist_months, fill_value=0.0)
+        piv = piv.reset_index().rename(columns={'PLANO_CONTAS': 'CONTA'})
 
-        # top contas pelo mês mais recente
-        piv["__LAST"] = piv[last_m]
-        top = piv.sort_values("__LAST", ascending=False).head(10).drop(columns="__LAST")
+        # top contas do último mês disponível
+        piv['__LAST'] = piv[last_m]
+        top = piv.sort_values('__LAST', ascending=False).head(10).drop(columns=['__LAST'])
 
-        totals_last = float(ent_hist[ent_hist["YM"] == last_m]["VALOR"].sum()) if (not ent_hist.empty) else 0.0
+        # AH / AV (AV base: TOTAL RECEITA do último mês, conforme regra)
+        total_receita_last = float(df_ent[df_ent['YM'] == last_m]['VALOR'].sum()) if not df_ent.empty else 0.0
+        top['AH_%'] = top.apply(lambda r: ((r[last_m] / r[prev_m]) - 1.0) if r[prev_m] != 0 else np.nan, axis=1)
+        top['AV_%'] = top.apply(lambda r: (r[last_m] / total_receita_last) if total_receita_last != 0 else np.nan, axis=1)
 
-        # AV e AH (com tratamento de divisão por zero)
-        top["AV_%"] = top[last_m].apply(lambda v: (v / totals_last) if totals_last else np.nan)
-        top["AH_%"] = top.apply(lambda r: ((r[last_m] / r[prev_m]) - 1.0) if r[prev_m] != 0 else np.nan, axis=1)
-
+        ent_calc = top.copy()
         cV, cH = st.columns(2)
-
         with cV:
             st.markdown("### Vertical — composição (mês mais recente)")
             d = top[["CONTA", last_m, "AV_%"]].copy().rename(columns={last_m: "Valor"})
@@ -1052,21 +1042,16 @@ elif page.startswith("💸"):
     st.markdown("<div class='hr'></div>", unsafe_allow_html=True)
     st.markdown("## Análise Vertical e Horizontal — Saídas")
 
-    hist_months_all = [m for m in months if m <= ym_focus]
+    sai_months = sorted([m for m in df_sai.get('YM', []).unique().tolist() if m]) if not df_sai.empty else []
+    hist_months_all = [m for m in sai_months if m <= ym_focus] if sai_months else []
     last_n = 6
     hist_months = hist_months_all[-last_n:] if len(hist_months_all) > last_n else hist_months_all
 
-    sai_hist = df_sai.copy()
-    if banco_sel and ("BANCO" in sai_hist.columns):
-        sai_hist = sai_hist[sai_hist["BANCO"].isin([_upper(x) for x in banco_sel])].copy()
-
-    # Total de receita (Entradas) — base para AV (Entradas e Saídas)
-    ent_hist = df_ent.copy()
-    if capt_sel and ("CAPTACAO" in ent_hist.columns):
-        ent_hist = ent_hist[ent_hist["CAPTACAO"].isin([_upper(x) for x in capt_sel])].copy()
+    sai_hist = df_sai[df_sai['YM'].isin(hist_months)].copy() if (not df_sai.empty and hist_months) else pd.DataFrame()
+    ent_hist = df_ent[df_ent['YM'].isin(hist_months)].copy() if (not df_ent.empty and hist_months) else pd.DataFrame()
 
     if sai_hist.empty or len(hist_months) < 2:
-        st.caption("Sem histórico suficiente para calcular a análise (precisa de pelo menos 2 meses).")
+        st.caption('Sem histórico suficiente de SAÍDAS para calcular análise vertical/horizontal.')
     else:
         last_m = hist_months[-1]
         prev_m = hist_months[-2]
@@ -1077,7 +1062,9 @@ elif page.startswith("💸"):
             .sum()
             .reset_index()
         )
-        piv = t.pivot(index="CONTA", columns="YM", values="VALOR").fillna(0.0).reset_index()
+        piv = t.pivot(index="CONTA", columns="YM", values="VALOR").fillna(0.0)
+        piv = piv.reindex(columns=hist_months, fill_value=0.0)
+        piv = piv.reset_index()
 
         piv["__LAST"] = piv[last_m]
         top = piv.sort_values("__LAST", ascending=False).head(10).drop(columns="__LAST")
@@ -1146,6 +1133,7 @@ elif page.startswith("🟨"):
 elif page.startswith("💧"):
     st.markdown("<div class='hr'></div>", unsafe_allow_html=True)
     st.markdown("## Fluxo de Caixa")
+    mv_bank = pd.DataFrame()  # evita NameError quando não há dados/meses filtrados
 
     fluxo = compute_fluxo_caixa(ent_f, sai_f)
     if fluxo.empty:
@@ -1182,6 +1170,7 @@ elif page.startswith("💧"):
         # cards rápidos (usando movimentação por banco — inclui transferências + saldo inicial)
         st.markdown("<div class='hr'></div>", unsafe_allow_html=True)
 
+        mv_bank = compute_saldo_bancos(df_saldo_ini, ent_f, sai_f, trf_f, dt_ini, dt_fim, banco_sel)
         if mv_bank is None or mv_bank.empty:
             cA, cB, cC, cD = st.columns(4)
             with cA:
