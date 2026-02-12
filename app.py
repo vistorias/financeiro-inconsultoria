@@ -721,7 +721,7 @@ elif page.startswith("💚"):
         piv["__LAST"] = piv[last_m]
         top = piv.sort_values("__LAST", ascending=False).head(10).drop(columns="__LAST")
 
-        totals_last = float(top[last_m].sum())
+        totals_last = float(ent_hist[ent_hist["YM"] == last_m]["VALOR"].sum()) if (not ent_hist.empty) else 0.0
 
         # AV e AH (com tratamento de divisão por zero)
         top["AV_%"] = top[last_m].apply(lambda v: (v / totals_last) if totals_last else np.nan)
@@ -818,6 +818,11 @@ elif page.startswith("💸"):
     if banco_sel and ("BANCO" in sai_hist.columns):
         sai_hist = sai_hist[sai_hist["BANCO"].isin([_upper(x) for x in banco_sel])].copy()
 
+    # Total de receita (Entradas) — base para AV (Entradas e Saídas)
+    ent_hist = df_ent.copy()
+    if capt_sel and ("CAPTACAO" in ent_hist.columns):
+        ent_hist = ent_hist[ent_hist["CAPTACAO"].isin([_upper(x) for x in capt_sel])].copy()
+
     if sai_hist.empty or len(hist_months) < 2:
         st.caption("Sem histórico suficiente para calcular a análise (precisa de pelo menos 2 meses).")
     else:
@@ -835,7 +840,7 @@ elif page.startswith("💸"):
         piv["__LAST"] = piv[last_m]
         top = piv.sort_values("__LAST", ascending=False).head(10).drop(columns="__LAST")
 
-        totals_last = float(top[last_m].sum())
+        totals_last = float(ent_hist[ent_hist["YM"] == last_m]["VALOR"].sum()) if (not ent_hist.empty) else 0.0
 
         top["AV_%"] = top[last_m].apply(lambda v: (v / totals_last) if totals_last else np.nan)
         top["AH_%"] = top.apply(lambda r: ((r[last_m] / r[prev_m]) - 1.0) if r[prev_m] != 0 else np.nan, axis=1)
@@ -1049,12 +1054,25 @@ elif page.startswith("💧"):
             top_ent = _top(combo, "Entradas", 8)
             top_sai = _top(combo, "Saídas", 8)
 
+            # Totais de receita (Entradas) por mês — base para AV (Entradas e Saídas)
+            receita_totals = {
+                m: float(df_ent[df_ent["YM"] == m]["VALOR"].sum()) if (not df_ent.empty) else 0.0
+                for m in sel_months
+            }
+            receita_last_total = float(receita_totals.get(last_m, 0.0) or 0.0)
+
             def _calc_ah_av(df_typ: pd.DataFrame):
                 df_typ = df_typ.copy()
-                totals = {m: float(df_typ[m].sum()) for m in sel_months}
+                totals = {m: float(df_typ[m].sum()) for m in sel_months}  # fallback
                 prev_m = sel_months[-2]
-                df_typ["AH_%"] = df_typ.apply(lambda r: ((r[last_m] / r[prev_m]) - 1.0) if r[prev_m] != 0 else np.nan, axis=1)
-                df_typ["AV_%"] = df_typ.apply(lambda r: (r[last_m] / totals[last_m]) if totals[last_m] != 0 else np.nan, axis=1)
+
+                df_typ["AH_%"] = df_typ.apply(
+                    lambda r: ((r[last_m] / r[prev_m]) - 1.0) if r[prev_m] != 0 else np.nan,
+                    axis=1,
+                )
+
+                den = receita_last_total if receita_last_total != 0 else float(totals.get(last_m, 0.0) or 0.0)
+                df_typ["AV_%"] = df_typ.apply(lambda r: (r[last_m] / den) if den != 0 else np.nan, axis=1)
                 return df_typ
 
             ent_calc = _calc_ah_av(top_ent) if not top_ent.empty else pd.DataFrame()
@@ -1067,7 +1085,7 @@ elif page.startswith("💧"):
                     st.caption("Sem dados de entradas.")
                 else:
                     d = ent_calc[["CONTA", last_m]].copy().rename(columns={last_m: "Valor"})
-                    total = float(d["Valor"].sum()) if len(d) else 0.0
+                    total = receita_last_total if receita_last_total else (float(d["Valor"].sum()) if len(d) else 0.0)
                     d["%"] = d["Valor"].apply(lambda x: (x / total) if total else 0.0)
                     bars = alt.Chart(d).mark_bar().encode(
                         x=alt.X("%:Q", title="% do total", axis=alt.Axis(format=".0%")),
@@ -1085,7 +1103,7 @@ elif page.startswith("💧"):
                     st.caption("Sem dados de saídas.")
                 else:
                     d = sai_calc[["CONTA", last_m]].copy().rename(columns={last_m: "Valor"})
-                    total = float(d["Valor"].sum()) if len(d) else 0.0
+                    total = receita_last_total if receita_last_total else (float(d["Valor"].sum()) if len(d) else 0.0)
                     d["%"] = d["Valor"].apply(lambda x: (x / total) if total else 0.0)
                     bars = alt.Chart(d).mark_bar().encode(
                         x=alt.X("%:Q", title="% do total", axis=alt.Axis(format=".0%")),
