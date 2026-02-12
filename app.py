@@ -261,11 +261,17 @@ TAB_SAI = "5. Saídas"
 TAB_TRF = "6. Transferencias"
 
 
+TAB_SALDO_INI = "1. Saldo inicial"
 @st.cache_data(ttl=300, show_spinner=False)
 def read_tab(sheet_id: str, tab: str) -> pd.DataFrame:
-    """Leitura robusta (evita erros do get_all_records quando há cabeçalhos duplicados/vazios)."""
+    """Leitura robusta (evita erros do get_all_records quando há cabeçalhos duplicados/vazios).
+    Se a aba não existir, retorna DataFrame vazio.
+    """
     sh = client.open_by_key(sheet_id)
-    ws = sh.worksheet(tab)
+    try:
+        ws = sh.worksheet(tab)
+    except Exception:
+        return pd.DataFrame()
     values = ws.get_all_values()
     if not values or len(values) < 2:
         return pd.DataFrame()
@@ -421,6 +427,34 @@ def normalize_transferencias(df: pd.DataFrame) -> pd.DataFrame:
     keep = [c for c in keep if c in df.columns]
     return df[keep].copy()
 
+def normalize_saldo_inicial(df: pd.DataFrame) -> pd.DataFrame:
+    """Normaliza a aba 1. Saldo inicial (opcional).
+    Espera colunas como: BANCO e SALDO/VALOR.
+    Retorna: BANCO, SALDO
+    """
+    if df is None or df.empty:
+        return pd.DataFrame(columns=["BANCO", "SALDO"])
+    df = df.copy()
+    cols_norm = [_norm_col(c) for c in df.columns]
+    df.columns = cols_norm
+
+    c_banco = pick_col(cols_norm, "BANCO", "CONTA", "INSTITUICAO", "INSTITUIÇÃO")
+    c_saldo = pick_col(cols_norm, "SALDO", "SALDO INICIAL", "VALOR", "R$")
+
+    if not c_banco or not c_saldo:
+        return pd.DataFrame(columns=["BANCO", "SALDO"])
+
+    out = pd.DataFrame()
+    out["BANCO"] = df[c_banco].astype(str).map(_upper)
+    out["SALDO"] = df[c_saldo].apply(money_to_float)
+
+    out = out[(out["BANCO"] != "") & (out["SALDO"].notna())].copy()
+    if out.empty:
+        return pd.DataFrame(columns=["BANCO", "SALDO"])
+
+    out = out.groupby("BANCO", as_index=False)["SALDO"].sum()
+    return out
+
 
 def compute_fluxo_caixa(df_ent: pd.DataFrame, df_sai: pd.DataFrame) -> pd.DataFrame:
     ent_day = (
@@ -442,69 +476,92 @@ def compute_fluxo_caixa(df_ent: pd.DataFrame, df_sai: pd.DataFrame) -> pd.DataFr
 
 
 
-def compute_saldo_bancos(df_ent: pd.DataFrame, df_sai: pd.DataFrame, df_trf: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    """Calcula movimentação e saldo acumulado por banco (conta) ao longo do tempo.
 
-    Observação importante:
-    - O saldo parte de ZERO (não temos saldo inicial no Sheets).
-    - Para bater exatamente com o extrato bancário real, é necessário informar um saldo inicial por banco.
+def compute_saldo_bancos(
+    df_ent: pd.DataFrame,
+    df_sai: pd.DataFrame,
+    df_trf: pd.DataFrame,
+    df_saldo_ini: Optional[pd.DataFrame] = None,
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """Movimentação e saldo por banco (por dia).
+
+    - Usa BANCO nas Entradas e nas Saídas, e ORIGEM/DESTINO em Transferências.
+    - Se houver a aba '1. Saldo inicial', soma esse saldo ao acumulado (saldo real).
+    Retorna:
+      mv:   DATA, BANCO, ENTRADAS, SAIDAS, TRF_IN, TRF_OUT, SALDO_DIA, SALDO_MOV_ACUM, SALDO_REAL
+      resumo: BANCO, SALDO_INICIAL, SALDO_MOV, SALDO_REAL_FINAL
     """
-    moves = []
 
-    # Entradas (+) por banco (se a aba Entradas tiver coluna BANCO)
-    if (df_ent is not None) and (not df_ent.empty) and ("BANCO" in df_ent.columns):
-        e = df_ent.copy()
-        e["BANCO"] = e["BANCO"].astype(str).map(_upper)
-        e = e[e["BANCO"] != ""]
-        if not e.empty:
-            g = e.groupby(["DATA", "BANCO"])["VALOR"].sum().reset_index()
-            g = g.rename(columns={"DATA": "DATA", "VALOR": "DELTA"})
-            moves.append(g)
+    # mapa de saldos iniciais
+    saldo_ini_map = {}
+    if df_saldo_ini is not None and not df_saldo_ini.empty and {"BANCO", "SALDO"}.issubset(df_saldo_ini.columns):
+        saldo_ini_map = {str(k).upper().strip(): float(v) for k, v in df_saldo_ini[["BANCO", "SALDO"]].values}
 
-    # Saídas (-) por banco
-    if (df_sai is not None) and (not df_sai.empty) and ("BANCO" in df_sai.columns):
-        s = df_sai.copy()
-        s["BANCO"] = s["BANCO"].astype(str).map(_upper)
-        s = s[s["BANCO"] != ""]
-        if not s.empty:
-            g = s.groupby(["DATA_REF", "BANCO"])["VALOR"].sum().reset_index()
-            g = g.rename(columns={"DATA_REF": "DATA", "VALOR": "DELTA"})
-            g["DELTA"] = -g["DELTA"]
-            moves.append(g)
-
-    # Transferências: saída (-) da ORIGEM e entrada (+) no DESTINO
-    if (df_trf is not None) and (not df_trf.empty):
-        t = df_trf.copy()
-        if "ORIGEM" in t.columns:
-            out = t.copy()
-            out["BANCO"] = out["ORIGEM"].astype(str).map(_upper)
-            out = out[out["BANCO"] != ""]
-            if not out.empty:
-                g = out.groupby(["DATA", "BANCO"])["VALOR"].sum().reset_index().rename(columns={"VALOR": "DELTA"})
-                g["DELTA"] = -g["DELTA"]
-                moves.append(g)
-        if "DESTINO" in t.columns:
-            inn = t.copy()
-            inn["BANCO"] = inn["DESTINO"].astype(str).map(_upper)
-            inn = inn[inn["BANCO"] != ""]
-            if not inn.empty:
-                g = inn.groupby(["DATA", "BANCO"])["VALOR"].sum().reset_index().rename(columns={"VALOR": "DELTA"})
-                moves.append(g)
-
-    if not moves:
-        return (
-            pd.DataFrame(columns=["DATA", "BANCO", "DELTA"]),
-            pd.DataFrame(columns=["DATA", "BANCO", "SALDO"]),
+    # ---------- entradas por banco/dia ----------
+    ent = pd.DataFrame(columns=["DATA", "BANCO", "ENTRADAS"])
+    if df_ent is not None and (not df_ent.empty) and ("DATA" in df_ent.columns) and ("VALOR" in df_ent.columns) and ("BANCO" in df_ent.columns):
+        ent = (
+            df_ent.groupby(["DATA", "BANCO"], as_index=False)["VALOR"]
+            .sum()
+            .rename(columns={"VALOR": "ENTRADAS"})
         )
 
-    mv = pd.concat(moves, ignore_index=True)
-    mv = mv.groupby(["DATA", "BANCO"])["DELTA"].sum().reset_index()
-    mv = mv.sort_values("DATA")
+    # ---------- saídas por banco/dia ----------
+    sai = pd.DataFrame(columns=["DATA", "BANCO", "SAIDAS"])
+    if df_sai is not None and (not df_sai.empty) and ("DATA_REF" in df_sai.columns) and ("VALOR" in df_sai.columns) and ("BANCO" in df_sai.columns):
+        sai = (
+            df_sai.groupby(["DATA_REF", "BANCO"], as_index=False)["VALOR"]
+            .sum()
+            .rename(columns={"DATA_REF": "DATA", "VALOR": "SAIDAS"})
+        )
 
-    # saldo acumulado por banco
-    mv["SALDO"] = mv.groupby("BANCO")["DELTA"].cumsum()
+    # ---------- transferências por banco/dia ----------
+    trf_in = pd.DataFrame(columns=["DATA", "BANCO", "TRF_IN"])
+    trf_out = pd.DataFrame(columns=["DATA", "BANCO", "TRF_OUT"])
+    if df_trf is not None and (not df_trf.empty) and ("DATA" in df_trf.columns) and ("VALOR" in df_trf.columns):
+        if "DESTINO" in df_trf.columns:
+            trf_in = (
+                df_trf.groupby(["DATA", "DESTINO"], as_index=False)["VALOR"]
+                .sum()
+                .rename(columns={"DESTINO": "BANCO", "VALOR": "TRF_IN"})
+            )
+        if "ORIGEM" in df_trf.columns:
+            trf_out = (
+                df_trf.groupby(["DATA", "ORIGEM"], as_index=False)["VALOR"]
+                .sum()
+                .rename(columns={"ORIGEM": "BANCO", "VALOR": "TRF_OUT"})
+            )
 
-    return mv, mv[["DATA", "BANCO", "SALDO"]].copy()
+    # ---------- base diária ----------
+    mv = ent.merge(sai, on=["DATA", "BANCO"], how="outer").merge(trf_in, on=["DATA", "BANCO"], how="outer").merge(trf_out, on=["DATA", "BANCO"], how="outer").fillna(0.0)
+    if mv.empty:
+        mv = pd.DataFrame(columns=["DATA", "BANCO", "ENTRADAS", "SAIDAS", "TRF_IN", "TRF_OUT", "SALDO_DIA", "SALDO_MOV_ACUM", "SALDO_REAL"])
+        resumo = pd.DataFrame(columns=["BANCO", "SALDO_INICIAL", "SALDO_MOV", "SALDO_REAL_FINAL"])
+        return mv, resumo
+
+    mv["SALDO_DIA"] = mv["ENTRADAS"] - mv["SAIDAS"] + mv["TRF_IN"] - mv["TRF_OUT"]
+
+    # acumulado por banco (movimentação) e saldo real (com saldo inicial)
+    def _add_acum(g: pd.DataFrame) -> pd.DataFrame:
+        g = g.sort_values("DATA").copy()
+        bank = str(g["BANCO"].iloc[0]).upper().strip()
+        ini = float(saldo_ini_map.get(bank, 0.0))
+        g["SALDO_MOV_ACUM"] = g["SALDO_DIA"].cumsum()
+        g["SALDO_REAL"] = ini + g["SALDO_MOV_ACUM"]
+        g["SALDO_INICIAL"] = ini
+        return g
+
+    mv = mv.groupby("BANCO", group_keys=False).apply(_add_acum)
+    mv = mv.sort_values(["BANCO", "DATA"])
+
+    # resumo por banco
+    resumo = (
+        mv.groupby("BANCO", as_index=False)
+        .agg(SALDO_INICIAL=("SALDO_INICIAL", "max"), SALDO_MOV=("SALDO_DIA", "sum"), SALDO_REAL_FINAL=("SALDO_REAL", "last"))
+        .sort_values("SALDO_REAL_FINAL", ascending=False)
+    )
+
+    return mv, resumo
 
 
 def last_point_label(df: pd.DataFrame, xcol: str, ycol: str, label: str = None):
@@ -540,10 +597,12 @@ with st.spinner("Carregando planilha..."):
     df_ent_raw = read_tab(SHEET_ID, TAB_ENT)
     df_sai_raw = read_tab(SHEET_ID, TAB_SAI)
     df_trf_raw = read_tab(SHEET_ID, TAB_TRF)
+    df_saldo_raw = read_tab(SHEET_ID, TAB_SALDO_INI)
 
 df_ent = normalize_entradas(df_ent_raw)
 df_sai = normalize_saidas(df_sai_raw)
 df_trf = normalize_transferencias(df_trf_raw)
+df_saldo_ini = normalize_saldo_inicial(df_saldo_raw)
 
 months = sorted(list(set([m for m in df_ent.get("YM", []) if m] + [m for m in df_sai.get("YM", []) if m])))
 if not months:
@@ -1026,12 +1085,23 @@ elif page.startswith("💧"):
         st.markdown("<div class='hr'></div>", unsafe_allow_html=True)
         st.markdown("### Saldo acumulado")
         acc = fluxo[["DATA", "SALDO_ACUM"]].copy()
+
+        saldo_ini_total = float(df_saldo_ini["SALDO"].sum()) if (df_saldo_ini is not None and not df_saldo_ini.empty and "SALDO" in df_saldo_ini.columns) else 0.0
+        usar_saldo_ini = True
+        if saldo_ini_total != 0:
+            usar_saldo_ini = st.checkbox("Considerar saldo inicial (mês anterior)", value=True, help="Soma o saldo da aba '1. Saldo inicial' ao acumulado do período.")
+        acc["SALDO_ACUM_REAL"] = acc["SALDO_ACUM"] + (saldo_ini_total if usar_saldo_ini else 0.0)
+
         acc_line = alt.Chart(acc).mark_line(point=True).encode(
             x=alt.X("DATA:T", title="Data", axis=alt.Axis(format="%d/%m")),
-            y=alt.Y("SALDO_ACUM:Q", title="R$"),
-            tooltip=[alt.Tooltip("DATA:T", title="Data", format="%d/%m/%Y"), alt.Tooltip("SALDO_ACUM:Q", format=",.2f", title="R$")],
+            y=alt.Y("SALDO_ACUM_REAL:Q", title="R$"),
+            tooltip=[
+                alt.Tooltip("DATA:T", title="Data", format="%d/%m/%Y"),
+                alt.Tooltip("SALDO_ACUM_REAL:Q", format=",.2f", title="Saldo acumulado"),
+            ],
         ).properties(height=260)
-        last_acc = last_point_label(acc.rename(columns={"SALDO_ACUM": "VALOR"}), "DATA", "VALOR")
+
+        last_acc = last_point_label(acc.rename(columns={"SALDO_ACUM_REAL": "VALOR"})[["DATA","VALOR"]], "DATA", "VALOR")
         lbl_acc = alt.Chart(last_acc).mark_text(align="left", dx=8, dy=-8).encode(x="DATA:T", y="VALOR:Q", text="LABEL:N")
         st.altair_chart(acc_line + lbl_acc, use_container_width=True)
 
@@ -1048,42 +1118,74 @@ elif page.startswith("💧"):
         st.markdown("<div class='hr'></div>", unsafe_allow_html=True)
         st.markdown("### Saldo das contas (por dia)")
 
-        mv_bank, saldo_bank = compute_saldo_bancos(ent_f, sai_f, trf_f)
+        
+        # -------------------- Saldo das contas (por dia) --------------------
+        st.markdown("<div class='hr'></div>", unsafe_allow_html=True)
+        st.markdown("### Saldo das contas (por dia)")
 
-        if saldo_bank.empty:
-            st.caption("Para calcular saldo por conta, a aba **Entradas** precisa ter a coluna **BANCO** (ou as movimentações precisam ser só por Saídas/Transferências).")
+        mv_bank, saldo_bank = compute_saldo_bancos(ent_f, sai_f, trf_f, df_saldo_ini)
+
+        if mv_bank.empty:
+            st.caption("Sem dados suficientes para calcular saldos por banco.")
         else:
-            bancos = sorted(saldo_bank["BANCO"].dropna().unique().tolist())
-            sel_bancos = st.multiselect("Contas", options=bancos, default=bancos, key="saldo_bancos_sel")
+            # seletor de banco
+            bank_opts = sorted(mv_bank["BANCO"].dropna().unique().tolist())
+            sel_bank = st.selectbox("Banco (saldo diário)", options=bank_opts, index=0)
 
-            sb = saldo_bank[saldo_bank["BANCO"].isin([_upper(x) for x in sel_bancos])].copy()
-            sb = sb.sort_values("DATA")
+            bdf = mv_bank[mv_bank["BANCO"] == sel_bank].copy().sort_values("DATA")
 
-            # gráfico: linhas por banco
-            line_b = alt.Chart(sb).mark_line(point=True).encode(
+            # Chart 1: saldo do dia (movimentação)
+            st.markdown("**Movimentação do dia (Entradas - Saídas + Transferências)**")
+            c1, c2 = st.columns([3, 2])
+
+            with c1:
+                c = alt.Chart(bdf).mark_line(point=True).encode(
+                    x=alt.X("DATA:T", title="Data", axis=alt.Axis(format="%d/%m")),
+                    y=alt.Y("SALDO_DIA:Q", title="R$"),
+                    tooltip=[
+                        alt.Tooltip("DATA:T", title="Data", format="%d/%m/%Y"),
+                        alt.Tooltip("SALDO_DIA:Q", title="Saldo do dia", format=",.2f"),
+                    ],
+                ).properties(height=260)
+                last = last_point_label(bdf.rename(columns={"SALDO_DIA": "VALOR"})[["DATA","VALOR"]], "DATA", "VALOR")
+                lbl = alt.Chart(last).mark_text(align="left", dx=8, dy=-8).encode(x="DATA:T", y="VALOR:Q", text="LABEL:N")
+                st.altair_chart(c + lbl, use_container_width=True)
+
+            # Chart 2: saldo acumulado (real)
+            with c2:
+                ini = float(bdf["SALDO_INICIAL"].max()) if "SALDO_INICIAL" in bdf.columns else 0.0
+                st_kpi("Saldo inicial (mês anterior)", fmt_brl(ini), sub="Aba 1. Saldo inicial")
+                st_kpi("Saldo real (último dia)", fmt_brl(float(bdf["SALDO_REAL"].iloc[-1])), sub="Saldo inicial + acumulado")
+
+            st.markdown("**Saldo acumulado (real)**")
+            c_acc = alt.Chart(bdf).mark_line(point=True).encode(
                 x=alt.X("DATA:T", title="Data", axis=alt.Axis(format="%d/%m")),
-                y=alt.Y("SALDO:Q", title="R$"),
-                color=alt.Color("BANCO:N", legend=alt.Legend(title="")),
+                y=alt.Y("SALDO_REAL:Q", title="R$"),
                 tooltip=[
                     alt.Tooltip("DATA:T", title="Data", format="%d/%m/%Y"),
-                    "BANCO",
-                    alt.Tooltip("SALDO:Q", title="Saldo (mov.)", format=",.2f"),
+                    alt.Tooltip("SALDO_REAL:Q", title="Saldo acumulado", format=",.2f"),
                 ],
-            ).properties(height=320)
-            st.altair_chart(line_b, use_container_width=True)
+            ).properties(height=260)
+            last2 = last_point_label(bdf.rename(columns={"SALDO_REAL": "VALOR"})[["DATA","VALOR"]], "DATA", "VALOR")
+            lbl2 = alt.Chart(last2).mark_text(align="left", dx=8, dy=-8).encode(x="DATA:T", y="VALOR:Q", text="LABEL:N")
+            st.altair_chart(c_acc + lbl2, use_container_width=True)
 
-            # tabela: saldo por banco por dia (wide)
-            st.markdown("#### Tabela — saldo por conta (por dia)")
-            piv = sb.pivot_table(index="DATA", columns="BANCO", values="SALDO", aggfunc="last").sort_index().fillna(method="ffill").fillna(0.0)
-            piv_show = piv.reset_index()
-            for c in piv.columns:
-                piv_show[c] = piv_show[c].apply(fmt_brl)
-            piv_show["DATA"] = piv_show["DATA"].apply(lambda d: d.strftime("%d/%m/%Y") if isinstance(d, (date, datetime, pd.Timestamp)) else str(d))
-            st.dataframe(piv_show, use_container_width=True, hide_index=True)
+            # Tabela do banco selecionado
+            st.markdown("**Tabela (banco selecionado)**")
+            show = bdf[["DATA", "ENTRADAS", "SAIDAS", "TRF_IN", "TRF_OUT", "SALDO_DIA", "SALDO_REAL"]].copy()
+            for c in ["ENTRADAS", "SAIDAS", "TRF_IN", "TRF_OUT", "SALDO_DIA", "SALDO_REAL"]:
+                show[c] = show[c].apply(fmt_brl)
+            show["DATA"] = pd.to_datetime(show["DATA"]).dt.strftime("%d/%m/%Y")
+            st.dataframe(show, use_container_width=True, hide_index=True)
 
-            st.caption("Obs.: este saldo é **movimentação acumulada** a partir de zero. Para bater com o saldo real do banco, precisamos somar um **saldo inicial** por conta.")
-
-        # 3) Pagamentos x Vencimentos (saídas)  --- FIX DO ERRO (dtype date x datetime) ---
+            # Resumo por banco
+            st.markdown("**Resumo por banco**")
+            sum_show = saldo_bank.copy()
+            for c in ["SALDO_INICIAL", "SALDO_MOV", "SALDO_REAL_FINAL"]:
+                if c in sum_show.columns:
+                    sum_show[c] = sum_show[c].apply(fmt_brl)
+            st.dataframe(sum_show, use_container_width=True, hide_index=True)
+# 3) Pagamentos x Vencimentos (saídas)  --- FIX DO ERRO (dtype date x datetime) ---
         if (not sai_f.empty) and ("VENCIMENTO" in sai_f.columns):
             st.markdown("<div class='hr'></div>", unsafe_allow_html=True)
             st.markdown("### Pagamentos x Vencimentos (saídas)")
