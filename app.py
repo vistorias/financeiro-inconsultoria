@@ -689,6 +689,81 @@ elif page.startswith("💚"):
     if not out.empty:
         out["R$"] = out["VALOR"].map(fmt_brl)
     st.dataframe(out.drop(columns=["VALOR"], errors="ignore"), use_container_width=True, hide_index=True)
+    # -------- Análise Vertical & Horizontal (Entradas) --------
+    st.markdown("<div class='hr'></div>", unsafe_allow_html=True)
+    st.markdown("## Análise Vertical e Horizontal — Entradas")
+
+    # meses do histórico (até o último mês selecionado)
+    hist_months_all = [m for m in months if m <= ym_focus]
+    last_n = 6
+    hist_months = hist_months_all[-last_n:] if len(hist_months_all) > last_n else hist_months_all
+
+    ent_hist = df_ent.copy()
+    if capt_sel and ("CAPTACAO" in ent_hist.columns):
+        ent_hist = ent_hist[ent_hist["CAPTACAO"].isin([_upper(x) for x in capt_sel])].copy()
+
+    if ent_hist.empty or len(hist_months) < 2:
+        st.caption("Sem histórico suficiente para calcular a análise (precisa de pelo menos 2 meses).")
+    else:
+        last_m = hist_months[-1]
+        prev_m = hist_months[-2]
+
+        t = (
+            ent_hist[ent_hist["YM"].isin(hist_months)]
+            .groupby(["PLANO_CONTAS", "YM"])["VALOR"]
+            .sum()
+            .reset_index()
+        )
+        piv = t.pivot(index="PLANO_CONTAS", columns="YM", values="VALOR").fillna(0.0)
+        piv = piv.reset_index().rename(columns={"PLANO_CONTAS": "CONTA"})
+
+        # top contas pelo mês mais recente
+        piv["__LAST"] = piv[last_m]
+        top = piv.sort_values("__LAST", ascending=False).head(10).drop(columns="__LAST")
+
+        totals_last = float(top[last_m].sum())
+
+        # AV e AH (com tratamento de divisão por zero)
+        top["AV_%"] = top[last_m].apply(lambda v: (v / totals_last) if totals_last else np.nan)
+        top["AH_%"] = top.apply(lambda r: ((r[last_m] / r[prev_m]) - 1.0) if r[prev_m] != 0 else np.nan, axis=1)
+
+        cV, cH = st.columns(2)
+
+        with cV:
+            st.markdown("### Vertical — composição (mês mais recente)")
+            d = top[["CONTA", last_m, "AV_%"]].copy().rename(columns={last_m: "Valor"})
+            bars = alt.Chart(d).mark_bar().encode(
+                x=alt.X("AV_%:Q", title="% do total", axis=alt.Axis(format=".0%")),
+                y=alt.Y("CONTA:N", sort='-x', title=""),
+                tooltip=["CONTA", alt.Tooltip("Valor:Q", format=",.2f"), alt.Tooltip("AV_%:Q", format=".1%")],
+            ).properties(height=320)
+            txt = alt.Chart(d).mark_text(dx=6, align="left").encode(
+                x="AV_%:Q", y=alt.Y("CONTA:N", sort='-x'), text=alt.Text("AV_%:Q", format=".0%")
+            )
+            st.altair_chart(bars + txt, use_container_width=True)
+
+        with cH:
+            st.markdown("### Horizontal — evolução (últimos meses)")
+            tot = pd.DataFrame({"YM": hist_months})
+            tot["Entradas"] = tot["YM"].map(lambda m: float(ent_hist[ent_hist["YM"] == m]["VALOR"].sum()))
+            tot["Mês"] = tot["YM"].map(month_label)
+            line = alt.Chart(tot).mark_line(point=True).encode(
+                x=alt.X("Mês:N", sort=list(tot["Mês"]), title=""),
+                y=alt.Y("Entradas:Q", title="R$"),
+                tooltip=["Mês", alt.Tooltip("Entradas:Q", format=",.2f", title="R$")],
+            ).properties(height=320)
+            st.altair_chart(line, use_container_width=True)
+
+        st.markdown("### Tabela (AH/AV) — top contas (Entradas)")
+        out = top[["CONTA"] + hist_months + ["AH_%", "AV_%"]].copy()
+        for m in hist_months:
+            out[m] = out[m].apply(lambda v: safe_num(v))
+        show = out.copy()
+        for m in hist_months:
+            show[m] = show[m].apply(fmt_brl)
+        show["AH_%"] = show["AH_%"].apply(lambda v: "" if pd.isna(v) else f"{v*100:.1f}%")
+        show["AV_%"] = show["AV_%"].apply(lambda v: "" if pd.isna(v) else f"{v*100:.1f}%")
+        st.dataframe(show, use_container_width=True, hide_index=True)
 
 
 elif page.startswith("💸"):
@@ -731,6 +806,77 @@ elif page.startswith("💸"):
     if not out.empty:
         out["R$"] = out["VALOR"].map(fmt_brl)
     st.dataframe(out.drop(columns=["VALOR"], errors="ignore"), use_container_width=True, hide_index=True)
+    # -------- Análise Vertical & Horizontal (Saídas) --------
+    st.markdown("<div class='hr'></div>", unsafe_allow_html=True)
+    st.markdown("## Análise Vertical e Horizontal — Saídas")
+
+    hist_months_all = [m for m in months if m <= ym_focus]
+    last_n = 6
+    hist_months = hist_months_all[-last_n:] if len(hist_months_all) > last_n else hist_months_all
+
+    sai_hist = df_sai.copy()
+    if banco_sel and ("BANCO" in sai_hist.columns):
+        sai_hist = sai_hist[sai_hist["BANCO"].isin([_upper(x) for x in banco_sel])].copy()
+
+    if sai_hist.empty or len(hist_months) < 2:
+        st.caption("Sem histórico suficiente para calcular a análise (precisa de pelo menos 2 meses).")
+    else:
+        last_m = hist_months[-1]
+        prev_m = hist_months[-2]
+
+        t = (
+            sai_hist[sai_hist["YM"].isin(hist_months)]
+            .groupby(["CONTA", "YM"])["VALOR"]
+            .sum()
+            .reset_index()
+        )
+        piv = t.pivot(index="CONTA", columns="YM", values="VALOR").fillna(0.0).reset_index()
+
+        piv["__LAST"] = piv[last_m]
+        top = piv.sort_values("__LAST", ascending=False).head(10).drop(columns="__LAST")
+
+        totals_last = float(top[last_m].sum())
+
+        top["AV_%"] = top[last_m].apply(lambda v: (v / totals_last) if totals_last else np.nan)
+        top["AH_%"] = top.apply(lambda r: ((r[last_m] / r[prev_m]) - 1.0) if r[prev_m] != 0 else np.nan, axis=1)
+
+        cV, cH = st.columns(2)
+
+        with cV:
+            st.markdown("### Vertical — composição (mês mais recente)")
+            d = top[["CONTA", last_m, "AV_%"]].copy().rename(columns={last_m: "Valor"})
+            bars = alt.Chart(d).mark_bar().encode(
+                x=alt.X("AV_%:Q", title="% do total", axis=alt.Axis(format=".0%")),
+                y=alt.Y("CONTA:N", sort='-x', title=""),
+                tooltip=["CONTA", alt.Tooltip("Valor:Q", format=",.2f"), alt.Tooltip("AV_%:Q", format=".1%")],
+            ).properties(height=320)
+            txt = alt.Chart(d).mark_text(dx=6, align="left").encode(
+                x="AV_%:Q", y=alt.Y("CONTA:N", sort='-x'), text=alt.Text("AV_%:Q", format=".0%")
+            )
+            st.altair_chart(bars + txt, use_container_width=True)
+
+        with cH:
+            st.markdown("### Horizontal — evolução (últimos meses)")
+            tot = pd.DataFrame({"YM": hist_months})
+            tot["Saídas"] = tot["YM"].map(lambda m: float(sai_hist[sai_hist["YM"] == m]["VALOR"].sum()))
+            tot["Mês"] = tot["YM"].map(month_label)
+            line = alt.Chart(tot).mark_line(point=True).encode(
+                x=alt.X("Mês:N", sort=list(tot["Mês"]), title=""),
+                y=alt.Y("Saídas:Q", title="R$"),
+                tooltip=["Mês", alt.Tooltip("Saídas:Q", format=",.2f", title="R$")],
+            ).properties(height=320)
+            st.altair_chart(line, use_container_width=True)
+
+        st.markdown("### Tabela (AH/AV) — top contas (Saídas)")
+        out = top[["CONTA"] + hist_months + ["AH_%", "AV_%"]].copy()
+        for m in hist_months:
+            out[m] = out[m].apply(lambda v: safe_num(v))
+        show = out.copy()
+        for m in hist_months:
+            show[m] = show[m].apply(fmt_brl)
+        show["AH_%"] = show["AH_%"].apply(lambda v: "" if pd.isna(v) else f"{v*100:.1f}%")
+        show["AV_%"] = show["AV_%"].apply(lambda v: "" if pd.isna(v) else f"{v*100:.1f}%")
+        st.dataframe(show, use_container_width=True, hide_index=True)
 
 
 elif page.startswith("🟨"):
