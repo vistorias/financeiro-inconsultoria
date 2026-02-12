@@ -260,8 +260,9 @@ TAB_ENT = "4. Entradas"
 TAB_SAI = "5. Saídas"
 TAB_TRF = "6. Transferencias"
 
-
-TAB_SALDO_INI = "1. Saldo inicial"
+# Na planilha original o nome costuma vir com "Inicial" (I maiúsculo).
+# Além disso, a função read_tab abaixo faz busca tolerante (case/acentos).
+TAB_SALDO_INI = "1. Saldo Inicial"
 @st.cache_data(ttl=300, show_spinner=False)
 def read_tab(sheet_id: str, tab: str) -> pd.DataFrame:
     """Leitura robusta (evita erros do get_all_records quando há cabeçalhos duplicados/vazios).
@@ -271,7 +272,18 @@ def read_tab(sheet_id: str, tab: str) -> pd.DataFrame:
     try:
         ws = sh.worksheet(tab)
     except Exception:
-        return pd.DataFrame()
+        # Busca tolerante: ignora maiúsculas/minúsculas, acentos e múltiplos espaços.
+        try:
+            target = re.sub(r"\s+", " ", _strip_accents(tab).strip().lower())
+            for w in sh.worksheets():
+                wname = re.sub(r"\s+", " ", _strip_accents(w.title).strip().lower())
+                if wname == target:
+                    ws = w
+                    break
+            else:
+                return pd.DataFrame()
+        except Exception:
+            return pd.DataFrame()
     values = ws.get_all_values()
     if not values or len(values) < 2:
         return pd.DataFrame()
@@ -546,8 +558,20 @@ def compute_saldo_bancos(
     - A acumulação sempre começa no 1º dia do mês do dt_ini (mesmo que o usuário filtre um período menor),
       para que o saldo acumulado do período reflita a sobra do mês anterior.
     """
+    # Se não houver seleção explícita (ou o filtro vier vazio),
+    # usa todos os bancos presentes nos dados do período.
     if not bancos_sel:
-        return pd.DataFrame()
+        banks = set()
+        if (df_sai is not None) and (not df_sai.empty) and ("BANCO" in df_sai.columns):
+            banks |= set([b for b in df_sai["BANCO"].dropna().astype(str).tolist() if str(b).strip() != ""])
+        if (df_trf is not None) and (not df_trf.empty):
+            if "ORIGEM" in df_trf.columns:
+                banks |= set([b for b in df_trf["ORIGEM"].dropna().astype(str).tolist() if str(b).strip() != ""])
+            if "DESTINO" in df_trf.columns:
+                banks |= set([b for b in df_trf["DESTINO"].dropna().astype(str).tolist() if str(b).strip() != ""])
+        bancos_sel = sorted(list(banks))
+        if not bancos_sel:
+            return pd.DataFrame()
 
     # define dt_ini/dt_fim se vierem vazios
     all_dates: List[date] = []
