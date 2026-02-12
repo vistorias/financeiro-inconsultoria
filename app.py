@@ -280,13 +280,6 @@ def read_tab(sheet_id: str, tab: str) -> pd.DataFrame:
 # ====================== NORMALIZERS ======================
 
 def normalize_entradas(df: pd.DataFrame) -> pd.DataFrame:
-    # Normaliza a aba de Entradas.
-    #
-    # Regras:
-    # - DATA = data de recebimento (quando já foi pago/recebido)
-    # - VENCIMENTO = data de vencimento (quando a cobrança vence)
-    # - DATA_REF = DATA se existir, senão VENCIMENTO (para agrupar por mês mesmo quando ainda não recebeu)
-    # - YM = mês de referência (DATA_REF)
     if df.empty:
         return df
     df = df.copy()
@@ -320,22 +313,26 @@ def normalize_entradas(df: pd.DataFrame) -> pd.DataFrame:
     if (df["CAPTACAO"] == "").all():
         df["CAPTACAO"] = df["CLIENTE"]
 
-    df["DATA_REF"] = df["DATA"].where(df["DATA"].notna(), df["VENCIMENTO"])
-    df["YM"] = df["DATA_REF"].apply(to_ym)
+    df["YM"] = df["DATA"].apply(to_ym)
 
-    df = df[df["DATA_REF"].notna()].copy()
+    df = df[df["DATA"].notna()].copy()
     df = df[df["VALOR"] != 0].copy()
 
     keep = [
-        "DATA", "DATA_REF", "YM",
+        "DATA",
+        "YM",
         "VENCIMENTO",
-        "CAPTACAO", "CLIENTE",
-        "PLANO_CONTAS", "MEIO", "AREA", "PRODUTO", "DESCRICAO",
+        "CAPTACAO",
+        "CLIENTE",
+        "PLANO_CONTAS",
+        "MEIO",
+        "AREA",
+        "PRODUTO",
+        "DESCRICAO",
         "VALOR",
     ]
     keep = [c for c in keep if c in df.columns]
     return df[keep].copy()
-
 
 
 def normalize_saidas(df: pd.DataFrame) -> pd.DataFrame:
@@ -423,8 +420,8 @@ def normalize_transferencias(df: pd.DataFrame) -> pd.DataFrame:
 
 def compute_fluxo_caixa(df_ent: pd.DataFrame, df_sai: pd.DataFrame) -> pd.DataFrame:
     ent_day = (
-        df_ent[df_ent["DATA"].notna()].groupby("DATA")["VALOR"].sum().reset_index().rename(columns={"VALOR": "ENTRADAS"})
-        if (not df_ent.empty and "DATA" in df_ent.columns)
+        df_ent.groupby("DATA")["VALOR"].sum().reset_index().rename(columns={"VALOR": "ENTRADAS"})
+        if not df_ent.empty
         else pd.DataFrame(columns=["DATA", "ENTRADAS"])
     )
     sai_day = (
@@ -490,26 +487,44 @@ st.markdown("<div class='small'>Painel financeiro (Google Sheets) • Layout est
 c1, c2, c3, c4 = st.columns([2, 3, 3, 3])
 with c1:
     month_label_map = {month_label(m): m for m in months}
-    default_m = months[-1]
-
-    sel_month_labels = st.multiselect(
-        "Mês(es)",
-        options=list(month_label_map.keys()),
-        default=[month_label(default_m)],
-    )
-    if not sel_month_labels:
-        sel_month_labels = [month_label(default_m)]
-
-    ym_sel_list = sorted(list({month_label_map[lbl] for lbl in sel_month_labels}))
-    ym_sel = ym_sel_list[-1]  # referência (último mês selecionado)
-    sel_month_label = month_label(ym_sel)
+    labels = list(month_label_map.keys())
+    default_label = month_label(months[-1])
+    sel_labels = st.multiselect("Mês(es)", options=labels, default=[default_label])
+    ym_sels = sorted([month_label_map[l] for l in sel_labels]) if sel_labels else [months[-1]]
+    ym_focus = ym_sels[-1]
+    sel_period_label = default_label if len(ym_sels)==1 else f"{month_label(ym_sels[0])} – {month_label(ym_sels[-1])}"
 
 # período do mês escolhido (pelas datas efetivas)
 dates_in_month: List[date] = []
+
+def _as_date(v):
+    """Garante date (e evita pd.NaT quebrando st.date_input)."""
+    if v is None or v == "":
+        return None
+    try:
+        if pd.isna(v):
+            return None
+    except Exception:
+        pass
+    if isinstance(v, pd.Timestamp):
+        return v.to_pydatetime().date()
+    if isinstance(v, datetime):
+        return v.date()
+    if isinstance(v, date):
+        return v
+    return None
+
 if not df_ent.empty:
-    dates_in_month += [d for d in df_ent[df_ent["YM"].isin(ym_sel_list)]["DATA"].tolist() if isinstance(d, date)]
+    for v in df_ent[df_ent["YM"].isin(ym_sels)]["DATA"].tolist():
+        d = _as_date(v)
+        if d:
+            dates_in_month.append(d)
+
 if not df_sai.empty:
-    dates_in_month += [d for d in df_sai[df_sai["YM"].isin(ym_sel_list)]["DATA_REF"].tolist() if isinstance(d, date)]
+    for v in df_sai[df_sai["YM"].isin(ym_sels)]["DATA_REF"].tolist():
+        d = _as_date(v)
+        if d:
+            dates_in_month.append(d)
 
 dmin = min(dates_in_month) if dates_in_month else None
 dmax = max(dates_in_month) if dates_in_month else None
@@ -524,7 +539,7 @@ with c2:
 
 with c3:
     capt_opts = (
-        sorted(df_ent[df_ent["YM"].isin(ym_sel_list)]["CAPTACAO"].dropna().unique().tolist())
+        sorted(df_ent[df_ent["YM"].isin(ym_sels)]["CAPTACAO"].dropna().unique().tolist())
         if (not df_ent.empty and "CAPTACAO" in df_ent.columns)
         else []
     )
@@ -532,7 +547,7 @@ with c3:
 
 with c4:
     banco_opts = (
-        sorted(df_sai[df_sai["YM"].isin(ym_sel_list)]["BANCO"].dropna().unique().tolist())
+        sorted(df_sai[df_sai["YM"].isin(ym_sels)]["BANCO"].dropna().unique().tolist())
         if (not df_sai.empty and "BANCO" in df_sai.columns)
         else []
     )
@@ -540,9 +555,9 @@ with c4:
 
 
 def apply_filters():
-    ent = df_ent[df_ent["YM"].isin(ym_sel_list)].copy() if not df_ent.empty else df_ent.copy()
-    sai = df_sai[df_sai["YM"].isin(ym_sel_list)].copy() if not df_sai.empty else df_sai.copy()
-    trf = df_trf[df_trf["YM"].isin(ym_sel_list)].copy() if not df_trf.empty else df_trf.copy()
+    ent = df_ent[df_ent["YM"].isin(ym_sels)].copy() if not df_ent.empty else df_ent.copy()
+    sai = df_sai[df_sai["YM"].isin(ym_sels)].copy() if not df_sai.empty else df_sai.copy()
+    trf = df_trf[df_trf["YM"].isin(ym_sels)].copy() if not df_trf.empty else df_trf.copy()
 
     if dt_ini and dt_fim:
         if not ent.empty:
@@ -564,7 +579,7 @@ def apply_filters():
 ent_f, sai_f, trf_f = apply_filters()
 
 # ====================== KPIs (geral do período filtrado) ======================
-ent_total = float(ent_f.loc[ent_f["DATA"].notna(), "VALOR"].sum()) if (not ent_f.empty and "VALOR" in ent_f.columns and "DATA" in ent_f.columns) else 0.0
+ent_total = float(ent_f["VALOR"].sum()) if (not ent_f.empty and "VALOR" in ent_f.columns) else 0.0
 sai_total = float(sai_f["VALOR"].sum()) if (not sai_f.empty and "VALOR" in sai_f.columns) else 0.0
 
 inv_total = 0.0
@@ -583,7 +598,7 @@ if page.startswith("📊"):
     st.markdown("## Resumo do período")
     cA, cB, cC, cD, cE = st.columns(5)
     with cA:
-        st_kpi("Receita Total", fmt_brl(ent_total), sub=f"Mês {sel_month_label}")
+        st_kpi("Receita Total", fmt_brl(ent_total), sub=f"Período {sel_period_label}")
     with cB:
         st_kpi("Despesas", fmt_brl(desp_total), sub="Saídas (sem investimentos)")
     with cC:
@@ -597,7 +612,7 @@ if page.startswith("📊"):
     st.markdown("<div class='hr'></div>", unsafe_allow_html=True)
     st.markdown("## Evolução (mensal)")
     m_ent = (
-        df_ent[df_ent["DATA"].notna()].groupby("YM")["VALOR"].sum().reset_index().rename(columns={"VALOR": "Receitas"})
+        df_ent.groupby("YM")["VALOR"].sum().reset_index().rename(columns={"VALOR": "Receitas"})
         if not df_ent.empty
         else pd.DataFrame(columns=["YM", "Receitas"])
     )
@@ -659,7 +674,7 @@ elif page.startswith("💚"):
                 top_capt = f"{s.index[0]} • {fmt_brl(s.iloc[0])}"
         st_kpi("Top captação", top_capt or "-", sub="Maior origem no período")
 
-    daily = ent_f[ent_f["DATA"].notna()].groupby("DATA")["VALOR"].sum().reset_index().sort_values("DATA") if (not ent_f.empty and "DATA" in ent_f.columns) else pd.DataFrame()
+    daily = ent_f.groupby("DATA")["VALOR"].sum().reset_index().sort_values("DATA") if not ent_f.empty else pd.DataFrame()
     if not daily.empty:
         line = alt.Chart(daily).mark_line(point=True).encode(
             x=alt.X("DATA:T", title="Data", axis=alt.Axis(format="%d/%m")),
@@ -670,17 +685,9 @@ elif page.startswith("💚"):
         lbl = alt.Chart(last).mark_text(align="left", dx=8, dy=-8).encode(x="DATA:T", y="VALOR:Q", text="LABEL:N")
         st.altair_chart(line + lbl, use_container_width=True)
 
-    out = ent_f.copy() if not ent_f.empty else ent_f
+    out = ent_f.sort_values("DATA", ascending=False).copy() if not ent_f.empty else ent_f
     if not out.empty:
-        out["STATUS"] = np.where(out["DATA"].notna(), "RECEBIDO", "EM ABERTO")
-        out = out.sort_values(["STATUS", "DATA_REF"], ascending=[True, False], na_position="last").copy()
         out["R$"] = out["VALOR"].map(fmt_brl)
-        if "VENCIMENTO" in out.columns:
-            out["VENCIMENTO"] = out["VENCIMENTO"].apply(lambda d: d.strftime("%d/%m/%Y") if isinstance(d, date) else "")
-        if "DATA" in out.columns:
-            out["DATA"] = out["DATA"].apply(lambda d: d.strftime("%d/%m/%Y") if isinstance(d, date) else "")
-        if "DATA_REF" in out.columns:
-            out["DATA_REF"] = out["DATA_REF"].apply(lambda d: d.strftime("%d/%m/%Y") if isinstance(d, date) else "")
     st.dataframe(out.drop(columns=["VALOR"], errors="ignore"), use_container_width=True, hide_index=True)
 
 
@@ -856,17 +863,11 @@ elif page.startswith("💧"):
         st.markdown("<div class='hr'></div>", unsafe_allow_html=True)
         st.markdown("## Análise Vertical e Horizontal")
 
-        all_months = sorted(
-            list(
-                set(
-                    [m for m in df_ent[df_ent["DATA"].notna()].get("YM", []) if m]
-                    + [m for m in df_sai.get("YM", []) if m]
-                )
-            )
-        )
-
-        hist_months = [m for m in all_months if m <= ym_sel]
+        all_months = sorted(list(set([m for m in df_ent.get("YM", []) if m] + [m for m in df_sai.get("YM", []) if m])))
         last_n = 6
+        hist_months = [m for m in all_months if m <= ym_focus]
+        if not hist_months:
+            hist_months = all_months
         sel_months = hist_months[-last_n:] if len(hist_months) > last_n else hist_months
 
         def _monthly_table(df: pd.DataFrame, ym_col: str, acc_col: str, val_col: str, kind: str):
@@ -954,7 +955,7 @@ elif page.startswith("💧"):
             st.markdown("### Horizontal — evolução (últimos meses)")
 
             tot = pd.DataFrame({"YM": sel_months})
-            tot["Entradas"] = tot["YM"].map(lambda m: float(df_ent[(df_ent["YM"] == m) & (df_ent["DATA"].notna())]["VALOR"].sum()) if not df_ent.empty else 0.0)
+            tot["Entradas"] = tot["YM"].map(lambda m: float(df_ent[df_ent["YM"] == m]["VALOR"].sum()) if not df_ent.empty else 0.0)
             tot["Saídas"] = tot["YM"].map(lambda m: float(df_sai[df_sai["YM"] == m]["VALOR"].sum()) if not df_sai.empty else 0.0)
             tot["Resultado"] = tot["Entradas"] - tot["Saídas"]
             tot["Mês"] = tot["YM"].map(month_label)
@@ -991,113 +992,98 @@ elif page.startswith("💧"):
 
 elif page.startswith("⏳"):
     st.markdown("<div class='hr'></div>", unsafe_allow_html=True)
-    st.markdown("## Receber / Pagar — vencidos e próximos dias")
+    st.markdown("## Receber / Pagar (títulos em aberto e vencidos)")
 
-    hoje = date.today()
-    dias_futuros = st.slider("Próximos dias", min_value=1, max_value=60, value=10, step=1)
-    limite = hoje + timedelta(days=int(dias_futuros))
+    today = date.today()
 
-    # ----------------- A RECEBER -----------------
-    st.markdown("### Contas a Receber (Entradas)")
-    if df_ent.empty or "VENCIMENTO" not in df_ent.columns:
-        st.info("Não encontrei coluna de VENCIMENTO na aba de Entradas.")
-    else:
-        ent_all = df_ent.copy()
-        ent_aberto = ent_all[(ent_all["DATA"].isna()) & (ent_all["VENCIMENTO"].notna())].copy()
+    # -------- Contas a Receber (a partir da aba Entradas RAW, para capturar VENCIMENTO mesmo sem recebimento) --------
+    rec = df_ent_raw.copy()
+    rec.columns = [_norm_col(c) for c in rec.columns]
 
-        ent_vencidas = ent_aberto[ent_aberto["VENCIMENTO"] < hoje].copy()
-        ent_avencer = ent_aberto[(ent_aberto["VENCIMENTO"] >= hoje) & (ent_aberto["VENCIMENTO"] <= limite)].copy()
+    c_data_rec = pick_col(list(rec.columns), "DATA RECEBIMENTO", "DATA", "RECEBIMENTO")
+    c_venc_rec = pick_col(list(rec.columns), "DATA VENCIMENTO", "VENCIMENTO")
+    c_val_rec = pick_col(list(rec.columns), "VALOR", "R$ ENTRADA", "R$ENTRADA", "R$")
+    c_cliente = pick_col(list(rec.columns), "CLIENTE", "CLIENTES")
+    c_capt = pick_col(list(rec.columns), "CAPTACAO", "CAPTAÇÃO")
 
-        tot_venc = float(ent_vencidas["VALOR"].sum()) if (not ent_vencidas.empty and "VALOR" in ent_vencidas.columns) else 0.0
-        tot_av = float(ent_avencer["VALOR"].sum()) if (not ent_avencer.empty and "VALOR" in ent_avencer.columns) else 0.0
+    rec["RECEBIMENTO"] = rec[c_data_rec].apply(parse_date_any) if c_data_rec else pd.NaT
+    rec["VENCIMENTO"] = rec[c_venc_rec].apply(parse_date_any) if c_venc_rec else pd.NaT
+    rec["VALOR"] = rec[c_val_rec].apply(money_to_float) if c_val_rec else 0.0
+    rec["CLIENTE"] = rec[c_cliente].astype(str).map(_upper) if c_cliente else ""
+    rec["CAPTACAO"] = rec[c_capt].astype(str).map(_upper) if c_capt else rec["CLIENTE"]
 
-        cA, cB = st.columns(2)
-        with cA:
-            st_kpi("A receber vencido", fmt_brl(tot_venc), sub=f"Até {hoje.strftime('%d/%m/%Y')}",
-                   badge=("cobrar", "bad") if tot_venc > 0 else ("ok", "good"))
-        with cB:
-            st_kpi("A receber (próx. dias)", fmt_brl(tot_av), sub=f"Até {limite.strftime('%d/%m/%Y')}",
-                   badge=("atenção", "warn") if tot_av > 0 else ("ok", "good"))
+    # filtra meses selecionados pelo VENCIMENTO (se existir), senão pelo recebimento
+    rec["DATA_BASE"] = rec["VENCIMENTO"].where(rec["VENCIMENTO"].notna(), rec["RECEBIMENTO"])
+    rec["YM"] = rec["DATA_BASE"].apply(to_ym)
+    rec = rec[rec["YM"].isin(ym_sels)].copy()
 
-        st.markdown("**Quem está atrasado para me pagar (vencidos e em aberto)**")
-        if ent_vencidas.empty:
-            st.caption("Nenhuma entrada vencida em aberto.")
-        else:
-            grp = ent_vencidas.groupby("CLIENTE")["VALOR"].sum().sort_values(ascending=False).reset_index()
-            grp["R$"] = grp["VALOR"].map(fmt_brl)
-            st.dataframe(grp.drop(columns=["VALOR"]), use_container_width=True, hide_index=True)
+    rec_aberto = rec[rec["RECEBIMENTO"].isna() & rec["VENCIMENTO"].notna()].copy()
+    rec_vencido = rec_aberto[rec_aberto["VENCIMENTO"] < today].copy()
 
-            det = ent_vencidas.copy()
-            det["VENCIMENTO"] = det["VENCIMENTO"].apply(lambda d: d.strftime("%d/%m/%Y") if isinstance(d, date) else "")
-            det["R$"] = det["VALOR"].map(fmt_brl)
-            cols = [c for c in ["VENCIMENTO", "CLIENTE", "CAPTACAO", "PLANO_CONTAS", "DESCRICAO", "R$"] if c in det.columns]
-            st.dataframe(det[cols].sort_values("VENCIMENTO"), use_container_width=True, hide_index=True)
+    # próximos X dias
+    dias = st.slider("Próximos dias", min_value=1, max_value=60, value=15, step=1)
+    limite = today + timedelta(days=dias)
+    rec_prox = rec_aberto[(rec_aberto["VENCIMENTO"] >= today) & (rec_aberto["VENCIMENTO"] <= limite)].copy()
 
-        st.markdown(f"**Quem vai me pagar nos próximos {dias_futuros} dias (em aberto)**")
-        if ent_avencer.empty:
-            st.caption("Nenhuma entrada a vencer nesse intervalo.")
-        else:
-            grp2 = ent_avencer.groupby("CLIENTE")["VALOR"].sum().sort_values(ascending=False).reset_index()
-            grp2["R$"] = grp2["VALOR"].map(fmt_brl)
-            st.dataframe(grp2.drop(columns=["VALOR"]), use_container_width=True, hide_index=True)
+    # -------- Contas a Pagar (da saída normalizada, já contém VENCIMENTO/PAGAMENTO) --------
+    pay = df_sai.copy()
+    pay = pay[pay["YM"].isin(ym_sels)].copy()
 
-            det2 = ent_avencer.copy()
-            det2["VENCIMENTO"] = det2["VENCIMENTO"].apply(lambda d: d.strftime("%d/%m/%Y") if isinstance(d, date) else "")
-            det2["R$"] = det2["VALOR"].map(fmt_brl)
-            cols2 = [c for c in ["VENCIMENTO", "CLIENTE", "CAPTACAO", "PLANO_CONTAS", "DESCRICAO", "R$"] if c in det2.columns]
-            st.dataframe(det2[cols2].sort_values("VENCIMENTO"), use_container_width=True, hide_index=True)
+    pay_aberto = pay[pay["PAGAMENTO"].isna() & pay["VENCIMENTO"].notna()].copy()
+    pay_vencido = pay_aberto[pay_aberto["VENCIMENTO"] < today].copy()
+    pay_prox = pay_aberto[(pay_aberto["VENCIMENTO"] >= today) & (pay_aberto["VENCIMENTO"] <= limite)].copy()
+
+    # -------- KPIs --------
+    a1, a2, a3, a4 = st.columns(4)
+    with a1:
+        st_kpi("A receber vencido", fmt_brl(rec_vencido["VALOR"].sum() if not rec_vencido.empty else 0.0), sub="Contas vencidas e em aberto")
+    with a2:
+        st_kpi(f"A receber em {dias} dias", fmt_brl(rec_prox["VALOR"].sum() if not rec_prox.empty else 0.0), sub="Vencem nos próximos dias")
+    with a3:
+        st_kpi("A pagar vencido", fmt_brl(pay_vencido["VALOR"].sum() if not pay_vencido.empty else 0.0), sub="Contas vencidas e em aberto")
+    with a4:
+        st_kpi(f"A pagar em {dias} dias", fmt_brl(pay_prox["VALOR"].sum() if not pay_prox.empty else 0.0), sub="Vencem nos próximos dias")
 
     st.markdown("<div class='hr'></div>", unsafe_allow_html=True)
 
-    # ----------------- A PAGAR -----------------
-    st.markdown("### Contas a Pagar (Saídas)")
-    if df_sai.empty or "VENCIMENTO" not in df_sai.columns:
-        st.info("Não encontrei coluna de VENCIMENTO na aba de Saídas.")
-    else:
-        sai_all = df_sai.copy()
-        sai_aberto = sai_all[(sai_all["PAGAMENTO"].isna()) & (sai_all["VENCIMENTO"].notna())].copy() if "PAGAMENTO" in sai_all.columns else pd.DataFrame()
+    # -------- Listas --------
+    cL, cR = st.columns(2)
 
-        sai_vencidas = sai_aberto[sai_aberto["VENCIMENTO"] < hoje].copy()
-        sai_avencer = sai_aberto[(sai_aberto["VENCIMENTO"] >= hoje) & (sai_aberto["VENCIMENTO"] <= limite)].copy()
-
-        tot_venc2 = float(sai_vencidas["VALOR"].sum()) if (not sai_vencidas.empty and "VALOR" in sai_vencidas.columns) else 0.0
-        tot_av2 = float(sai_avencer["VALOR"].sum()) if (not sai_avencer.empty and "VALOR" in sai_avencer.columns) else 0.0
-
-        cC, cD = st.columns(2)
-        with cC:
-            st_kpi("A pagar vencido", fmt_brl(tot_venc2), sub=f"Até {hoje.strftime('%d/%m/%Y')}",
-                   badge=("pagar", "bad") if tot_venc2 > 0 else ("ok", "good"))
-        with cD:
-            st_kpi("A pagar (próx. dias)", fmt_brl(tot_av2), sub=f"Até {limite.strftime('%d/%m/%Y')}",
-                   badge=("atenção", "warn") if tot_av2 > 0 else ("ok", "good"))
-
-        st.markdown("**Quem está atrasado para eu pagar (vencidos e em aberto)**")
-        if sai_vencidas.empty:
-            st.caption("Nenhuma saída vencida em aberto.")
+    with cL:
+        st.markdown("### Quem está atrasado para me pagar")
+        if rec_vencido.empty:
+            st.caption("Sem contas a receber vencidas no período.")
         else:
-            grp3 = sai_vencidas.groupby("FORNECEDOR")["VALOR"].sum().sort_values(ascending=False).reset_index()
-            grp3["R$"] = grp3["VALOR"].map(fmt_brl)
-            st.dataframe(grp3.drop(columns=["VALOR"]), use_container_width=True, hide_index=True)
+            show = rec_vencido.sort_values("VENCIMENTO").copy()
+            show["R$"] = show["VALOR"].map(fmt_brl)
+            st.dataframe(show[["VENCIMENTO", "CAPTACAO", "CLIENTE", "R$"]], use_container_width=True, hide_index=True)
 
-            det3 = sai_vencidas.copy()
-            det3["VENCIMENTO"] = det3["VENCIMENTO"].apply(lambda d: d.strftime("%d/%m/%Y") if isinstance(d, date) else "")
-            det3["R$"] = det3["VALOR"].map(fmt_brl)
-            cols3 = [c for c in ["VENCIMENTO", "FORNECEDOR", "BANCO", "CONTA", "DESCRICAO", "R$"] if c in det3.columns]
-            st.dataframe(det3[cols3].sort_values("VENCIMENTO"), use_container_width=True, hide_index=True)
-
-        st.markdown(f"**Quem devo pagar nos próximos {dias_futuros} dias (em aberto)**")
-        if sai_avencer.empty:
-            st.caption("Nenhuma saída a vencer nesse intervalo.")
+        st.markdown("### Quem vai me pagar nos próximos dias")
+        if rec_prox.empty:
+            st.caption("Sem contas a receber nos próximos dias.")
         else:
-            grp4 = sai_avencer.groupby("FORNECEDOR")["VALOR"].sum().sort_values(ascending=False).reset_index()
-            grp4["R$"] = grp4["VALOR"].map(fmt_brl)
-            st.dataframe(grp4.drop(columns=["VALOR"]), use_container_width=True, hide_index=True)
+            show = rec_prox.sort_values("VENCIMENTO").copy()
+            show["R$"] = show["VALOR"].map(fmt_brl)
+            st.dataframe(show[["VENCIMENTO", "CAPTACAO", "CLIENTE", "R$"]], use_container_width=True, hide_index=True)
 
-            det4 = sai_avencer.copy()
-            det4["VENCIMENTO"] = det4["VENCIMENTO"].apply(lambda d: d.strftime("%d/%m/%Y") if isinstance(d, date) else "")
-            det4["R$"] = det4["VALOR"].map(fmt_brl)
-            cols4 = [c for c in ["VENCIMENTO", "FORNECEDOR", "BANCO", "CONTA", "DESCRICAO", "R$"] if c in det4.columns]
-            st.dataframe(det4[cols4].sort_values("VENCIMENTO"), use_container_width=True, hide_index=True)
+    with cR:
+        st.markdown("### Quem está atrasado para eu pagar")
+        if pay_vencido.empty:
+            st.caption("Sem contas a pagar vencidas no período.")
+        else:
+            show = pay_vencido.sort_values("VENCIMENTO").copy()
+            show["R$"] = show["VALOR"].map(fmt_brl)
+            cols = [c for c in ["VENCIMENTO", "FORNECEDOR", "CONTA", "BANCO", "R$"] if c in show.columns]
+            st.dataframe(show[cols], use_container_width=True, hide_index=True)
+
+        st.markdown("### Quem devo pagar nos próximos dias")
+        if pay_prox.empty:
+            st.caption("Sem contas a pagar nos próximos dias.")
+        else:
+            show = pay_prox.sort_values("VENCIMENTO").copy()
+            show["R$"] = show["VALOR"].map(fmt_brl)
+            cols = [c for c in ["VENCIMENTO", "FORNECEDOR", "CONTA", "BANCO", "R$"] if c in show.columns]
+            st.dataframe(show[cols], use_container_width=True, hide_index=True)
 
 
 elif page.startswith("🧾"):
@@ -1146,7 +1132,7 @@ else:
     st.download_button(
         "Baixar Entradas (CSV)",
         data=ent_out.drop(columns=["VALOR"], errors="ignore").to_csv(index=False).encode("utf-8-sig"),
-        file_name=f"entradas_{ym_sel_list[0]}_a_{ym_sel_list[-1]}.csv",
+        file_name=f"entradas_{ym_focus}.csv",
         mime="text/csv",
     )
 
@@ -1156,7 +1142,7 @@ else:
     st.download_button(
         "Baixar Saídas (CSV)",
         data=sai_out.drop(columns=["VALOR"], errors="ignore").to_csv(index=False).encode("utf-8-sig"),
-        file_name=f"saidas_{ym_sel_list[0]}_a_{ym_sel_list[-1]}.csv",
+        file_name=f"saidas_{ym_focus}.csv",
         mime="text/csv",
     )
 
@@ -1166,6 +1152,6 @@ else:
     st.download_button(
         "Baixar Transferências (CSV)",
         data=trf_out.drop(columns=["VALOR"], errors="ignore").to_csv(index=False).encode("utf-8-sig"),
-        file_name=f"transferencias_{ym_sel_list[0]}_a_{ym_sel_list[-1]}.csv",
+        file_name=f"transferencias_{ym_focus}.csv",
         mime="text/csv",
     )
