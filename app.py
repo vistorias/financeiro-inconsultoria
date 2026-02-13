@@ -511,14 +511,14 @@ def normalize_conciliacao(df: pd.DataFrame) -> Tuple[Optional[int], Optional[int
         return year, month, bank, pd.DataFrame(columns=["DATA", "ENTRADAS", "SAIDAS", "SALDO_DIA", "SALDO_ACUM"])
 
     out = pd.DataFrame()
-        def _parse_day(v):
-        # aceita "15", 15.0, "15/12/2025", "Dia 15", etc. Retorna np.nan se não conseguir.
+
+    def _parse_day(v):
+        """Aceita '15', 15.0, '15/12/2025', 'Dia 15' etc. Retorna np.nan se não conseguir."""
         if v is None:
             return np.nan
         s = str(v).strip()
         if s == "" or s.lower() in {"nan", "none"}:
             return np.nan
-        # tenta extrair o primeiro número de 1-2 dígitos
         mm = re.search(r"(\d{1,2})", s)
         if not mm:
             return np.nan
@@ -857,76 +857,6 @@ df_ent = normalize_entradas(df_ent_raw)
 df_sai = normalize_saidas(df_sai_raw)
 df_trf = normalize_transferencias(df_trf_raw)
 conc_year, conc_month, conc_bank, conc_tbl_all = normalize_conciliacao(df_conc_raw)
-def normalize_conciliacao(df: pd.DataFrame) -> Tuple[pd.DataFrame, Optional[str], Optional[str], Optional[str]]:
-    """Normaliza a aba 7. Conciliação (tabela diária já com saldo acumulado do mês).
-    Retorna:
-      - tabela (DATA, ENTRADAS, SAIDAS, SALDO_DIA, SALDO_ACUM_MES)
-      - ano (str) / mes (str) / banco (str) encontrados no cabeçalho (se existirem)
-    """
-    if df is None or df.empty:
-        return pd.DataFrame(), None, None, None
-
-    d = df.copy()
-    d.columns = [_norm_col(c) for c in d.columns]
-
-    c_dia = pick_col(list(d.columns), "DIA DO MES", "DIA")
-    c_ent = pick_col(list(d.columns), "ENTRADAS", "ENTRADA")
-    c_sai = pick_col(list(d.columns), "SAIDAS", "SAIDA")
-    c_saldo_dia = pick_col(list(d.columns), "SALDO DO DIA", "SALDO_DIA")
-    c_saldo_acum = pick_col(list(d.columns), "SALDO ACUMULADO MES", "SALDO ACUMULADO MÊS", "SALDO ACUMULADO", "SALDO_ACUMULADO_MES")
-
-    # tenta achar ano/mes/banco em colunas soltas da própria aba (layout livre)
-    ano_val = None
-    mes_val = None
-    banco_val = None
-    try:
-        if "ANO" in d.columns:
-            vv = d["ANO"].replace("", np.nan).dropna()
-            if len(vv) > 0:
-                ano_val = str(int(float(vv.iloc[0])))
-        if "MES" in d.columns:
-            vv = d["MES"].replace("", np.nan).dropna()
-            if len(vv) > 0:
-                mes_val = str(vv.iloc[0]).strip()
-        if "MÊS" in d.columns and mes_val is None:
-            vv = d["MÊS"].replace("", np.nan).dropna()
-            if len(vv) > 0:
-                mes_val = str(vv.iloc[0]).strip()
-        if "BANCO" in d.columns:
-            vv = d["BANCO"].replace("", np.nan).dropna()
-            if len(vv) > 0:
-                banco_val = _upper(vv.iloc[0])
-    except Exception:
-        pass
-
-    out = pd.DataFrame()
-    if c_dia:
-        out["DIA"] = pd.to_numeric(d[c_dia], errors="coerce")
-    else:
-        out["DIA"] = pd.Series(dtype=float)
-
-    out["ENTRADAS"] = d[c_ent].apply(money_to_float) if c_ent else 0.0
-    out["SAIDAS"] = d[c_sai].apply(money_to_float) if c_sai else 0.0
-
-    if c_saldo_dia:
-        out["SALDO_DIA"] = d[c_saldo_dia].apply(money_to_float)
-    else:
-        out["SALDO_DIA"] = out["ENTRADAS"] - out["SAIDAS"]
-
-    if c_saldo_acum:
-        out["SALDO_ACUM_MES"] = d[c_saldo_acum].apply(money_to_float)
-    else:
-        out["SALDO_ACUM_MES"] = np.nan
-
-    out = out[out["DIA"].notna()].copy()
-    out["DIA"] = out["DIA"].astype(int)
-
-    # DATA será preenchida depois, com base em ym selecionado (YYYY-MM)
-    out["DATA"] = pd.NaT
-
-    out = out.sort_values("DIA")
-    return out[["DATA", "DIA", "ENTRADAS", "SAIDAS", "SALDO_DIA", "SALDO_ACUM_MES"]].copy(), ano_val, mes_val, banco_val
-
 saldo_base_date, df_saldo_ini = parse_saldo_inicial_sheet(df_saldo_raw)
 
 months = sorted(list(set([m for m in df_ent.get("YM", []) if m] + [m for m in df_sai.get("YM", []) if m])))
