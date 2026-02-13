@@ -259,6 +259,7 @@ if not SHEET_ID:
 TAB_ENT = "4. Entradas"
 TAB_SAI = "5. Saídas"
 TAB_TRF = "6. Transferencias"
+TAB_CONC = "7. Conciliação"
 
 
 TAB_SALDO_INI = "1. Saldo inicial"
@@ -730,11 +731,82 @@ with st.spinner("Carregando planilha..."):
     df_ent_raw = read_tab(SHEET_ID, TAB_ENT)
     df_sai_raw = read_tab(SHEET_ID, TAB_SAI)
     df_trf_raw = read_tab(SHEET_ID, TAB_TRF)
+    df_conc_raw = read_tab(SHEET_ID, TAB_CONC)
     df_saldo_raw = read_tab(SHEET_ID, TAB_SALDO_INI)
 
 df_ent = normalize_entradas(df_ent_raw)
 df_sai = normalize_saidas(df_sai_raw)
 df_trf = normalize_transferencias(df_trf_raw)
+def normalize_conciliacao(df: pd.DataFrame) -> Tuple[pd.DataFrame, Optional[str], Optional[str], Optional[str]]:
+    """Normaliza a aba 7. Conciliação (tabela diária já com saldo acumulado do mês).
+    Retorna:
+      - tabela (DATA, ENTRADAS, SAIDAS, SALDO_DIA, SALDO_ACUM_MES)
+      - ano (str) / mes (str) / banco (str) encontrados no cabeçalho (se existirem)
+    """
+    if df is None or df.empty:
+        return pd.DataFrame(), None, None, None
+
+    d = df.copy()
+    d.columns = [_norm_col(c) for c in d.columns]
+
+    c_dia = pick_col(list(d.columns), "DIA DO MES", "DIA")
+    c_ent = pick_col(list(d.columns), "ENTRADAS", "ENTRADA")
+    c_sai = pick_col(list(d.columns), "SAIDAS", "SAIDA")
+    c_saldo_dia = pick_col(list(d.columns), "SALDO DO DIA", "SALDO_DIA")
+    c_saldo_acum = pick_col(list(d.columns), "SALDO ACUMULADO MES", "SALDO ACUMULADO MÊS", "SALDO ACUMULADO", "SALDO_ACUMULADO_MES")
+
+    # tenta achar ano/mes/banco em colunas soltas da própria aba (layout livre)
+    ano_val = None
+    mes_val = None
+    banco_val = None
+    try:
+        if "ANO" in d.columns:
+            vv = d["ANO"].replace("", np.nan).dropna()
+            if len(vv) > 0:
+                ano_val = str(int(float(vv.iloc[0])))
+        if "MES" in d.columns:
+            vv = d["MES"].replace("", np.nan).dropna()
+            if len(vv) > 0:
+                mes_val = str(vv.iloc[0]).strip()
+        if "MÊS" in d.columns and mes_val is None:
+            vv = d["MÊS"].replace("", np.nan).dropna()
+            if len(vv) > 0:
+                mes_val = str(vv.iloc[0]).strip()
+        if "BANCO" in d.columns:
+            vv = d["BANCO"].replace("", np.nan).dropna()
+            if len(vv) > 0:
+                banco_val = _upper(vv.iloc[0])
+    except Exception:
+        pass
+
+    out = pd.DataFrame()
+    if c_dia:
+        out["DIA"] = pd.to_numeric(d[c_dia], errors="coerce")
+    else:
+        out["DIA"] = pd.Series(dtype=float)
+
+    out["ENTRADAS"] = d[c_ent].apply(money_to_float) if c_ent else 0.0
+    out["SAIDAS"] = d[c_sai].apply(money_to_float) if c_sai else 0.0
+
+    if c_saldo_dia:
+        out["SALDO_DIA"] = d[c_saldo_dia].apply(money_to_float)
+    else:
+        out["SALDO_DIA"] = out["ENTRADAS"] - out["SAIDAS"]
+
+    if c_saldo_acum:
+        out["SALDO_ACUM_MES"] = d[c_saldo_acum].apply(money_to_float)
+    else:
+        out["SALDO_ACUM_MES"] = np.nan
+
+    out = out[out["DIA"].notna()].copy()
+    out["DIA"] = out["DIA"].astype(int)
+
+    # DATA será preenchida depois, com base em ym selecionado (YYYY-MM)
+    out["DATA"] = pd.NaT
+
+    out = out.sort_values("DIA")
+    return out[["DATA", "DIA", "ENTRADAS", "SAIDAS", "SALDO_DIA", "SALDO_ACUM_MES"]].copy(), ano_val, mes_val, banco_val
+
 saldo_base_date, df_saldo_ini = parse_saldo_inicial_sheet(df_saldo_raw)
 
 months = sorted(list(set([m for m in df_ent.get("YM", []) if m] + [m for m in df_sai.get("YM", []) if m])))
@@ -1173,33 +1245,124 @@ elif page.startswith("💧"):
     st.markdown("<div class='hr'></div>", unsafe_allow_html=True)
     st.markdown("## Fluxo de Caixa")
 
-    # ---- Construção do saldo REAL diário (com carryover) ----
-    # Usa: compute_saldo_bancos (por banco + transferências + saldo inicial).
-    # Depois faz forward-fill por banco para preencher dias sem movimento.
-    with st.spinner("Calculando saldos..."):
-        mv_banks, resumo_banks = compute_saldo_bancos(
-            df_ent_all=df_ent,
-            df_sai_all=df_sai,
-            df_trf_all=df_trf,
-            df_saldo_ini=df_saldo_ini,
-            base_date=saldo_base_date,
+    # =========================================================
+    # PRIORIDADE: usar a aba 7. Conciliação (já tem o "saldo acumulado do mês"
+    # com o carryover do mês anterior — exatamente como você confere no Excel).
+    # =========================================================
+    use_conc = (len(ym_sels) == 1) and (conc_tbl is not None) and (not conc_tbl.empty)
+
+    # se a conciliação vier amarrada a um banco específico, respeita o filtro (quando possível)
+    if use_conc and conc_banco and banco_sel:
+        # se o usuário filtrou bancos e o banco da conciliação não está selecionado, não usa
+        if _upper(conc_banco) not in [_upper(b) for b in banco_sel]:
+            use_conc = False
+
+    if use_conc:
+        y = int(ym_focus[:4])
+        m = int(ym_focus[5:7])
+
+        fluxo_disp = conc_tbl.copy()
+        # preenche DATA a partir do DIA + (ano/mês do filtro)
+        fluxo_disp["DATA"] = fluxo_disp["DIA"].apply(lambda d: date(y, m, int(d)))
+
+        # recorte por período (date_input)
+        if dt_ini and dt_fim:
+            fluxo_disp = fluxo_disp[(fluxo_disp["DATA"] >= dt_ini) & (fluxo_disp["DATA"] <= dt_fim)].copy()
+
+        # garante saldo acumulado do mês (se a coluna vier vazia por algum motivo, calcula pelo 1º saldo de referência)
+        if "SALDO_ACUM_MES" not in fluxo_disp.columns:
+            fluxo_disp["SALDO_ACUM_MES"] = np.nan
+        if fluxo_disp["SALDO_ACUM_MES"].isna().all():
+            # tenta inferir o saldo inicial do mês: (saldo_acum do 1º dia - saldo_dia do 1º dia)
+            if len(fluxo_disp) > 0:
+                ini_mes = float(fluxo_disp["SALDO_DIA"].iloc[0]) * 0.0
+                ini_mes = float(fluxo_disp["SALDO_DIA"].iloc[0]) * 0.0  # fallback 0
+                # se existir alguma célula de saldo acumulado não-numérica, tenta extrair
+                try:
+                    ini_mes = float(fluxo_disp["SALDO_ACUM_MES"].iloc[0]) - float(fluxo_disp["SALDO_DIA"].iloc[0])
+                except Exception:
+                    ini_mes = 0.0
+                fluxo_disp = fluxo_disp.sort_values("DATA").copy()
+                fluxo_disp["SALDO_ACUM_MES"] = ini_mes + fluxo_disp["SALDO_DIA"].cumsum()
+
+        # gráfico (entradas / saídas / saldo do dia)
+        melt = fluxo_disp.melt(
+            id_vars=["DATA"],
+            value_vars=["ENTRADAS", "SAIDAS", "SALDO_DIA"],
+            var_name="Métrica",
+            value_name="Valor",
+        )
+        melt["Métrica"] = melt["Métrica"].replace(
+            {"ENTRADAS": "Entradas", "SAIDAS": "Saídas", "SALDO_DIA": "Saldo do dia"}
         )
 
-    bancos_sel_up = [_upper(b) for b in banco_sel] if banco_sel else []
-    fluxo_total = build_fluxo_total_from_mv(mv_banks, bancos_sel_up, dt_ini, dt_fim)
+        chart = (
+            alt.Chart(melt)
+            .mark_line(point=True)
+            .encode(
+                x=alt.X("DATA:T", title="Data", axis=alt.Axis(format="%d/%m")),
+                y=alt.Y("Valor:Q", title="R$"),
+                color=alt.Color("Métrica:N", legend=alt.Legend(title="")),
+                tooltip=[
+                    alt.Tooltip("DATA:T", title="Data", format="%d/%m/%Y"),
+                    "Métrica",
+                    alt.Tooltip("Valor:Q", format=",.2f", title="R$"),
+                ],
+            )
+            .properties(height=320)
+        )
+        st.altair_chart(chart, use_container_width=True)
 
-    # fallback: se não houver saldo inicial/transferências suficientes, mostra só movimento
-    if fluxo_total.empty:
+        st.markdown("<div class='hr'></div>", unsafe_allow_html=True)
+        cA, cB, cC, cD = st.columns(4)
+        with cA:
+            st_kpi("Entradas", fmt_brl(fluxo_disp["ENTRADAS"].sum()), sub="Somatório no período")
+        with cB:
+            st_kpi("Saídas", fmt_brl(fluxo_disp["SAIDAS"].sum()), sub="Somatório no período")
+        with cC:
+            saldo = float(fluxo_disp["SALDO_DIA"].sum())
+            badge = ("positivo", "good") if saldo >= 0 else ("negativo", "bad")
+            st_kpi("Saldo no período", fmt_brl(saldo), sub="Entradas - Saídas", badge=badge)
+        with cD:
+            final_mes = float(fluxo_disp.sort_values("DATA")["SALDO_ACUM_MES"].iloc[-1])
+            badge = ("positivo", "good") if final_mes >= 0 else ("negativo", "bad")
+            st_kpi("Saldo acumulado (mês)", fmt_brl(final_mes), sub="Carryover + movimentação", badge=badge)
+
+        st.markdown("<div class='hr'></div>", unsafe_allow_html=True)
+        st.markdown("### Tabela do fluxo (por dia)")
+        fluxo_tbl_show = fluxo_disp[["DATA", "ENTRADAS", "SAIDAS", "SALDO_DIA", "SALDO_ACUM_MES"]].copy().sort_values("DATA")
+        fluxo_tbl_show = fluxo_tbl_show.rename(columns={"SALDO_ACUM_MES": "SALDO_ACUM"})
+        for c in ["ENTRADAS", "SAIDAS", "SALDO_DIA", "SALDO_ACUM"]:
+            fluxo_tbl_show[c] = fluxo_tbl_show[c].apply(fmt_brl)
+        st.dataframe(fluxo_tbl_show, use_container_width=True, hide_index=True)
+
+    else:
+        # =========================================================
+        # FALLBACK: calcula pelo histórico (entradas/saídas/transferências)
+        # (mantém o painel funcional mesmo se a aba 7. Conciliação não existir)
+        # =========================================================
+
+        # 1) Fluxo "histórico" inclui o saldo inicial (base) para o acumulado REAL
         ent_hist = df_ent.copy()
         sai_hist = df_sai.copy()
+        trf_hist = df_trf.copy()
 
+        # aplica filtro de bancos também nas entradas (importante para não zerar as entradas quando filtra banco)
+        if banco_sel and (not ent_hist.empty) and ("BANCO" in ent_hist.columns):
+            ent_hist = ent_hist[ent_hist["BANCO"].isin([_upper(x) for x in banco_sel])].copy()
+
+        # limita ao período a partir do saldo_base_date para construir acumulado correto
         if saldo_base_date is not None:
             if not ent_hist.empty:
                 ent_hist = ent_hist[ent_hist["DATA"] >= saldo_base_date].copy()
             if not sai_hist.empty:
                 sai_hist = sai_hist[sai_hist["DATA_REF"] >= saldo_base_date].copy()
+            if not trf_hist.empty:
+                trf_hist = trf_hist[trf_hist["DATA"] >= saldo_base_date].copy()
 
         fluxo = compute_fluxo_caixa(ent_hist, sai_hist)
+
+        # recorta para o período exibido (filtros atuais)
         if dt_ini and dt_fim and (not fluxo.empty):
             fluxo_disp = fluxo[(fluxo["DATA"] >= dt_ini) & (fluxo["DATA"] <= dt_fim)].copy()
         else:
@@ -1208,15 +1371,30 @@ elif page.startswith("💧"):
         if fluxo_disp.empty:
             st.info("Sem dados suficientes para fluxo.")
         else:
-            # gráfico do movimento
-            melt = fluxo_disp.melt(id_vars=["DATA"], value_vars=["ENTRADAS", "SAIDAS", "SALDO_DIA"], var_name="Métrica", value_name="Valor")
-            melt["Métrica"] = melt["Métrica"].replace({"ENTRADAS": "Entradas", "SAIDAS": "Saídas", "SALDO_DIA": "Saldo do dia"})
-            chart = alt.Chart(melt).mark_line(point=True).encode(
-                x=alt.X("DATA:T", title="Data", axis=alt.Axis(format="%d/%m")),
-                y=alt.Y("Valor:Q", title="R$"),
-                color=alt.Color("Métrica:N", legend=alt.Legend(title="")),
-                tooltip=[alt.Tooltip("DATA:T", title="Data", format="%d/%m/%Y"), "Métrica", alt.Tooltip("Valor:Q", format=",.2f", title="R$")],
-            ).properties(height=320)
+            melt = fluxo_disp.melt(
+                id_vars=["DATA"],
+                value_vars=["ENTRADAS", "SAIDAS", "SALDO_DIA"],
+                var_name="Métrica",
+                value_name="Valor",
+            )
+            melt["Métrica"] = melt["Métrica"].replace(
+                {"ENTRADAS": "Entradas", "SAIDAS": "Saídas", "SALDO_DIA": "Saldo do dia"}
+            )
+            chart = (
+                alt.Chart(melt)
+                .mark_line(point=True)
+                .encode(
+                    x=alt.X("DATA:T", title="Data", axis=alt.Axis(format="%d/%m")),
+                    y=alt.Y("Valor:Q", title="R$"),
+                    color=alt.Color("Métrica:N", legend=alt.Legend(title="")),
+                    tooltip=[
+                        alt.Tooltip("DATA:T", title="Data", format="%d/%m/%Y"),
+                        "Métrica",
+                        alt.Tooltip("Valor:Q", format=",.2f", title="R$"),
+                    ],
+                )
+                .properties(height=320)
+            )
             st.altair_chart(chart, use_container_width=True)
 
             st.markdown("<div class='hr'></div>", unsafe_allow_html=True)
@@ -1241,90 +1419,40 @@ elif page.startswith("💧"):
                 fluxo_tbl_show[c] = fluxo_tbl_show[c].apply(fmt_brl)
             st.dataframe(fluxo_tbl_show, use_container_width=True, hide_index=True)
 
-    else:
-        # ---- Exibição com saldo REAL ----
-        # Gráfico do movimento (entradas/saídas/saldo do dia)
-        melt = fluxo_total.melt(id_vars=["DATA"], value_vars=["ENTRADAS", "SAIDAS", "SALDO_DIA"], var_name="Métrica", value_name="Valor")
-        melt["Métrica"] = melt["Métrica"].replace({"ENTRADAS": "Entradas", "SAIDAS": "Saídas", "SALDO_DIA": "Saldo do dia"})
-        chart = alt.Chart(melt).mark_line(point=True).encode(
-            x=alt.X("DATA:T", title="Data", axis=alt.Axis(format="%d/%m")),
-            y=alt.Y("Valor:Q", title="R$"),
-            color=alt.Color("Métrica:N", legend=alt.Legend(title="")),
-            tooltip=[alt.Tooltip("DATA:T", title="Data", format="%d/%m/%Y"), "Métrica", alt.Tooltip("Valor:Q", format=",.2f", title="R$")],
-        ).properties(height=320)
-        st.altair_chart(chart, use_container_width=True)
+            # 3) Pagamentos x Vencimentos (saídas)
+            if (not sai_f.empty) and ("VENCIMENTO" in sai_f.columns):
+                st.markdown("<div class='hr'></div>", unsafe_allow_html=True)
+                st.markdown("### Pagamentos x Vencimentos (saídas)")
 
-        st.markdown("<div class='hr'></div>", unsafe_allow_html=True)
-        cA, cB, cC, cD = st.columns(4)
-        with cA:
-            st_kpi("Entradas", fmt_brl(fluxo_total["ENTRADAS"].sum()), sub="Somatório no período")
-        with cB:
-            st_kpi("Saídas", fmt_brl(fluxo_total["SAIDAS"].sum()), sub="Somatório no período")
-        with cC:
-            saldo = float(fluxo_total["SALDO_DIA"].sum())
-            badge = ("positivo", "good") if saldo >= 0 else ("negativo", "bad")
-            st_kpi("Saldo no período", fmt_brl(saldo), sub="Entradas - Saídas", badge=badge)
-        with cD:
-            final_real = float(fluxo_total["SALDO_REAL"].iloc[-1])
-            badge = ("positivo", "good") if final_real >= 0 else ("negativo", "bad")
-            st_kpi("Saldo acumulado (real)", fmt_brl(final_real), sub="Com carryover", badge=badge)
+                dfp = sai_f.copy()
+                dfp["VENC"] = pd.to_datetime(dfp["VENCIMENTO"], errors="coerce")
+                dfp["PAG"] = pd.to_datetime(dfp["PAGAMENTO"], errors="coerce") if "PAGAMENTO" in dfp.columns else pd.NaT
 
-        st.markdown("<div class='hr'></div>", unsafe_allow_html=True)
-        st.markdown("### Tabela do fluxo (por dia) — saldo acumulado real")
+                if dt_ini and dt_fim:
+                    dt_ini_ts = pd.to_datetime(dt_ini)
+                    dt_fim_ts = pd.to_datetime(dt_fim)
+                    dfp = dfp[(dfp["VENC"].between(dt_ini_ts, dt_fim_ts)) | (dfp["PAG"].between(dt_ini_ts, dt_fim_ts))].copy()
 
-        fluxo_tbl = fluxo_total[["DATA", "ENTRADAS", "SAIDAS", "SALDO_DIA", "SALDO_REAL"]].copy().sort_values("DATA")
-        fluxo_tbl_show = fluxo_tbl.copy()
-        for c in ["ENTRADAS", "SAIDAS", "SALDO_DIA", "SALDO_REAL"]:
-            fluxo_tbl_show[c] = fluxo_tbl_show[c].apply(fmt_brl)
-        fluxo_tbl_show = fluxo_tbl_show.rename(columns={"SALDO_REAL": "SALDO_ACUM"})
-        st.dataframe(fluxo_tbl_show, use_container_width=True, hide_index=True)
+                venc = dfp[dfp["VENC"].notna()].groupby("VENC")["VALOR"].sum().reset_index().rename(columns={"VENC": "DATA", "VALOR": "Vencimentos"})
+                pag = dfp[dfp["PAG"].notna()].groupby("PAG")["VALOR"].sum().reset_index().rename(columns={"PAG": "DATA", "VALOR": "Pagamentos"})
 
-        # resumo por banco (para auditoria rápida)
-        if resumo_banks is not None and not resumo_banks.empty:
-            st.markdown("<div class='hr'></div>", unsafe_allow_html=True)
-            st.markdown("### Saldos por banco (auditoria)")
-            rb = resumo_banks.copy()
-            if bancos_sel_up:
-                rb = rb[rb["BANCO"].isin(bancos_sel_up)].copy()
-            for c in ["SALDO_INICIAL", "SALDO_MOV", "SALDO_REAL_FINAL"]:
-                if c in rb.columns:
-                    rb[c] = rb[c].apply(fmt_brl)
-            st.dataframe(rb, use_container_width=True, hide_index=True)
+                limite = pd.to_datetime(dt_fim) if dt_fim else pd.Timestamp.max
+                aberto = (
+                    dfp[(dfp["VENC"].notna()) & ((dfp["PAG"].isna()) | (dfp["PAG"] > limite))]
+                    .groupby("VENC")["VALOR"].sum().reset_index()
+                    .rename(columns={"VENC": "DATA", "VALOR": "Em aberto"})
+                )
 
-        # 3) Pagamentos x Vencimentos (saídas)
-        if (not sai_f.empty) and ("VENCIMENTO" in sai_f.columns):
-            st.markdown("<div class='hr'></div>", unsafe_allow_html=True)
-            st.markdown("### Pagamentos x Vencimentos (saídas)")
+                pv = venc.merge(pag, on="DATA", how="outer").merge(aberto, on="DATA", how="outer").fillna(0.0).sort_values("DATA")
+                pv_melt = pv.melt(id_vars=["DATA"], value_vars=["Em aberto", "Pagamentos", "Vencimentos"], var_name="Métrica", value_name="Valor")
 
-            dfp = sai_f.copy()
-            dfp["VENC"] = pd.to_datetime(dfp["VENCIMENTO"], errors="coerce")
-            dfp["PAG"] = pd.to_datetime(dfp["PAGAMENTO"], errors="coerce") if "PAGAMENTO" in dfp.columns else pd.NaT
-
-            if dt_ini and dt_fim:
-                dt_ini_ts = pd.to_datetime(dt_ini)
-                dt_fim_ts = pd.to_datetime(dt_fim)
-                dfp = dfp[(dfp["VENC"].between(dt_ini_ts, dt_fim_ts)) | (dfp["PAG"].between(dt_ini_ts, dt_fim_ts))].copy()
-
-            venc = dfp[dfp["VENC"].notna()].groupby("VENC")["VALOR"].sum().reset_index().rename(columns={"VENC": "DATA", "VALOR": "Vencimentos"})
-            pag = dfp[dfp["PAG"].notna()].groupby("PAG")["VALOR"].sum().reset_index().rename(columns={"PAG": "DATA", "VALOR": "Pagamentos"})
-
-            limite = pd.to_datetime(dt_fim) if dt_fim else pd.Timestamp.max
-            aberto = (
-                dfp[(dfp["VENC"].notna()) & ((dfp["PAG"].isna()) | (dfp["PAG"] > limite))]
-                .groupby("VENC")["VALOR"].sum().reset_index()
-                .rename(columns={"VENC": "DATA", "VALOR": "Em aberto"})
-            )
-
-            pv = venc.merge(pag, on="DATA", how="outer").merge(aberto, on="DATA", how="outer").fillna(0.0).sort_values("DATA")
-            pv_melt = pv.melt(id_vars=["DATA"], value_vars=["Em aberto", "Pagamentos", "Vencimentos"], var_name="Métrica", value_name="Valor")
-
-            bars = alt.Chart(pv_melt).mark_bar().encode(
-                x=alt.X("DATA:T", title="Data", axis=alt.Axis(format="%d/%m")),
-                y=alt.Y("Valor:Q", title="R$"),
-                color=alt.Color("Métrica:N", legend=alt.Legend(title="")),
-                tooltip=[alt.Tooltip("DATA:T", title="Data", format="%d/%m/%Y"), "Métrica", alt.Tooltip("Valor:Q", format=",.2f", title="R$")],
-            ).properties(height=320)
-            st.altair_chart(bars, use_container_width=True)
+                bars = alt.Chart(pv_melt).mark_bar().encode(
+                    x=alt.X("DATA:T", title="Data", axis=alt.Axis(format="%d/%m")),
+                    y=alt.Y("Valor:Q", title="R$"),
+                    color=alt.Color("Métrica:N", legend=alt.Legend(title="")),
+                    tooltip=[alt.Tooltip("DATA:T", title="Data", format="%d/%m/%Y"), "Métrica", alt.Tooltip("Valor:Q", format=",.2f", title="R$")],
+                ).properties(height=320)
+                st.altair_chart(bars, use_container_width=True)
 elif page.startswith("⏳"):
     st.markdown("<div class='hr'></div>", unsafe_allow_html=True)
     st.markdown("## Receber / Pagar (títulos em aberto e vencidos)")
