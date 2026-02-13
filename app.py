@@ -511,7 +511,24 @@ def normalize_conciliacao(df: pd.DataFrame) -> Tuple[Optional[int], Optional[int
         return year, month, bank, pd.DataFrame(columns=["DATA", "ENTRADAS", "SAIDAS", "SALDO_DIA", "SALDO_ACUM"])
 
     out = pd.DataFrame()
-    out["DIA"] = df[c_dia].apply(lambda v: int(float(v)) if str(v).strip() != "" else np.nan)
+        def _parse_day(v):
+        # aceita "15", 15.0, "15/12/2025", "Dia 15", etc. Retorna np.nan se não conseguir.
+        if v is None:
+            return np.nan
+        s = str(v).strip()
+        if s == "" or s.lower() in {"nan", "none"}:
+            return np.nan
+        # tenta extrair o primeiro número de 1-2 dígitos
+        mm = re.search(r"(\d{1,2})", s)
+        if not mm:
+            return np.nan
+        try:
+            d = int(mm.group(1))
+            return d if 1 <= d <= 31 else np.nan
+        except Exception:
+            return np.nan
+
+    out["DIA"] = df[c_dia].apply(_parse_day)
     out["ENTRADAS"] = df[c_ent].apply(money_to_float)
     out["SAIDAS"] = df[c_sai].apply(money_to_float)
     out["SALDO_DIA"] = df[c_sd].apply(money_to_float) if c_sd else (out["ENTRADAS"] - out["SAIDAS"])
