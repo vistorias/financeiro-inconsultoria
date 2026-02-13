@@ -428,6 +428,108 @@ def normalize_transferencias(df: pd.DataFrame) -> pd.DataFrame:
     keep = [c for c in keep if c in df.columns]
     return df[keep].copy()
 
+
+# ---------------------- CONCILIAÇÃO (aba 7) ----------------------
+MONTH_MAP_PT = {
+    "JAN": 1, "JANEIRO": 1,
+    "FEV": 2, "FEVEREIRO": 2,
+    "MAR": 3, "MARCO": 3, "MARÇO": 3,
+    "ABR": 4, "ABRIL": 4,
+    "MAI": 5, "MAIO": 5,
+    "JUN": 6, "JUNHO": 6,
+    "JUL": 7, "JULHO": 7,
+    "AGO": 8, "AGOSTO": 8,
+    "SET": 9, "SETEMBRO": 9,
+    "OUT": 10, "OUTUBRO": 10,
+    "NOV": 11, "NOVEMBRO": 11,
+    "DEZ": 12, "DEZEMBRO": 12,
+}
+
+def normalize_conciliacao(df: pd.DataFrame) -> Tuple[Optional[int], Optional[int], Optional[str], pd.DataFrame]:
+    """Interpreta a aba '7. Conciliação' (layout tipo relatório) e devolve:
+    - ano (int) se encontrado
+    - mes (int) se encontrado
+    - banco (str) se encontrado
+    - tabela por dia: DATA, ENTRADAS, SAIDAS, SALDO_DIA, SALDO_ACUM
+
+    Observação: nessa aba o 'SALDO ACUMULADO' já vem com o carregamento do mês anterior (como no Excel).
+    """
+    if df is None or df.empty:
+        return None, None, None, pd.DataFrame(columns=["DATA", "ENTRADAS", "SAIDAS", "SALDO_DIA", "SALDO_ACUM"])
+
+    df = df.copy()
+
+    orig_cols = [str(c).strip() for c in df.columns]
+    cols_norm = [_norm_col(c) for c in orig_cols]
+    df.columns = cols_norm
+
+    year = None
+    month = None
+    bank = None
+
+    # ano (no cabeçalho): coluna com "2025"
+    for c in orig_cols:
+        s = str(c).strip()
+        if re.fullmatch(r"20\d{2}", s):
+            try:
+                year = int(s)
+                break
+            except Exception:
+                pass
+
+    # mês (no cabeçalho): coluna com "Dez"/"Janeiro" etc
+    for c in orig_cols:
+        s = _strip_accents(str(c)).upper().strip()
+        if s in MONTH_MAP_PT:
+            month = MONTH_MAP_PT[s]
+            break
+
+    # banco (no cabeçalho): se houver 'Banco' seguido do nome do banco
+    try:
+        i = cols_norm.index("BANCO")
+        if i + 1 < len(orig_cols):
+            b = str(orig_cols[i + 1]).strip()
+            if b:
+                bank = _upper(b)
+    except Exception:
+        pass
+
+    if bank is None:
+        for c in orig_cols:
+            s = _upper(c)
+            if s in {"SICREDI", "NUBANK", "NU", "CAIXA", "BB", "BANCO DO BRASIL", "ITAU", "ITAÚ", "BRADESCO", "SANTANDER"}:
+                bank = s
+                break
+
+    c_dia = pick_col(list(df.columns), "DIA DO MES", "DIA DO MÊS", "DIA")
+    c_ent = pick_col(list(df.columns), "ENTRADAS", "ENTRADA")
+    c_sai = pick_col(list(df.columns), "SAIDAS", "SAÍDAS", "SAIDA")
+    c_sd = pick_col(list(df.columns), "SALDO DO DIA", "SALDO_DIA")
+    c_sa = pick_col(list(df.columns), "SALDO ACUMULADO MES", "SALDO ACUMULADO MÊS", "SALDO ACUMULADO", "SALDO_ACUMULADO", "SALDO_ACUM")
+
+    if not (c_dia and c_ent and c_sai and c_sa):
+        return year, month, bank, pd.DataFrame(columns=["DATA", "ENTRADAS", "SAIDAS", "SALDO_DIA", "SALDO_ACUM"])
+
+    out = pd.DataFrame()
+    out["DIA"] = df[c_dia].apply(lambda v: int(float(v)) if str(v).strip() != "" else np.nan)
+    out["ENTRADAS"] = df[c_ent].apply(money_to_float)
+    out["SAIDAS"] = df[c_sai].apply(money_to_float)
+    out["SALDO_DIA"] = df[c_sd].apply(money_to_float) if c_sd else (out["ENTRADAS"] - out["SAIDAS"])
+    out["SALDO_ACUM"] = df[c_sa].apply(money_to_float)
+
+    out = out.dropna(subset=["DIA"]).copy()
+    out["DIA"] = out["DIA"].astype(int)
+
+    if (year is not None) and (month is not None):
+        out["DATA"] = out["DIA"].apply(lambda d: date(year, month, int(d)) if 1 <= int(d) <= 31 else pd.NaT)
+        out = out[out["DATA"].notna()].copy()
+    else:
+        out["DATA"] = pd.NaT
+
+    out = out[["DATA", "ENTRADAS", "SAIDAS", "SALDO_DIA", "SALDO_ACUM"]].sort_values("DATA")
+    return year, month, bank, out
+
+
 def parse_saldo_inicial_sheet(df: pd.DataFrame) -> Tuple[Optional[date], pd.DataFrame]:
     """Lê a aba '1. Saldo inicial' (layout livre) e extrai:
     - base_date: data de referência do saldo inicial (se encontrada)
@@ -737,6 +839,7 @@ with st.spinner("Carregando planilha..."):
 df_ent = normalize_entradas(df_ent_raw)
 df_sai = normalize_saidas(df_sai_raw)
 df_trf = normalize_transferencias(df_trf_raw)
+conc_year, conc_month, conc_bank, conc_tbl_all = normalize_conciliacao(df_conc_raw)
 def normalize_conciliacao(df: pd.DataFrame) -> Tuple[pd.DataFrame, Optional[str], Optional[str], Optional[str]]:
     """Normaliza a aba 7. Conciliação (tabela diária já com saldo acumulado do mês).
     Retorna:
@@ -1244,6 +1347,83 @@ elif page.startswith("🟨"):
 elif page.startswith("💧"):
     st.markdown("<div class='hr'></div>", unsafe_allow_html=True)
     st.markdown("## Fluxo de Caixa")
+
+
+# --- Se houver conciliação (aba 7), usamos como VERDADE do saldo acumulado do mês ---
+conc_tbl = None
+try:
+    use_conc = (
+        (len(ym_sels) == 1)
+        and (conc_tbl_all is not None)
+        and (not conc_tbl_all.empty)
+        and (conc_year is not None)
+        and (conc_month is not None)
+    )
+    if use_conc:
+        y_sel = int(ym_sels[0][:4]); m_sel = int(ym_sels[0][5:7])
+        if (y_sel != conc_year) or (m_sel != conc_month):
+            use_conc = False
+
+    if use_conc and banco_sel:
+        # conciliação normalmente é de 1 banco só
+        if len(banco_sel) != 1:
+            use_conc = False
+        else:
+            bsel = _upper(banco_sel[0])
+            if conc_bank and (_upper(conc_bank) != bsel):
+                use_conc = False
+
+    if use_conc:
+        conc_tbl = conc_tbl_all.copy()
+        if dt_ini and dt_fim and (not conc_tbl.empty):
+            conc_tbl = conc_tbl[(conc_tbl["DATA"] >= dt_ini) & (conc_tbl["DATA"] <= dt_fim)].copy()
+except Exception:
+    conc_tbl = None
+
+if conc_tbl is not None and (not conc_tbl.empty):
+    st.caption("Fonte do saldo acumulado: **7. Conciliação** (saldo acumulado já considera o mês anterior).")
+
+    fluxo_disp = conc_tbl[["DATA", "ENTRADAS", "SAIDAS", "SALDO_DIA", "SALDO_ACUM"]].sort_values("DATA").copy()
+
+    melt = fluxo_disp.melt(
+        id_vars=["DATA"],
+        value_vars=["ENTRADAS", "SAIDAS", "SALDO_DIA"],
+        var_name="Métrica",
+        value_name="Valor",
+    )
+    melt["Métrica"] = melt["Métrica"].replace({"ENTRADAS": "Entradas", "SAIDAS": "Saídas", "SALDO_DIA": "Saldo do dia"})
+
+    chart = alt.Chart(melt).mark_line(point=True).encode(
+        x=alt.X("DATA:T", title="Data", axis=alt.Axis(format="%d/%m")),
+        y=alt.Y("Valor:Q", title="R$"),
+        color=alt.Color("Métrica:N", legend=alt.Legend(title="")),
+        tooltip=[alt.Tooltip("DATA:T", title="Data", format="%d/%m/%Y"), "Métrica", alt.Tooltip("Valor:Q", format=",.2f", title="R$")],
+    ).properties(height=320)
+    st.altair_chart(chart, use_container_width=True)
+
+    st.markdown("<div class='hr'></div>", unsafe_allow_html=True)
+    cA, cB, cC, cD = st.columns(4)
+    with cA:
+        st_kpi("Entradas", fmt_brl(fluxo_disp["ENTRADAS"].sum()), sub="Somatório no período")
+    with cB:
+        st_kpi("Saídas", fmt_brl(fluxo_disp["SAIDAS"].sum()), sub="Somatório no período")
+    with cC:
+        saldo = float(fluxo_disp["SALDO_DIA"].sum())
+        badge = ("positivo", "good") if saldo >= 0 else ("negativo", "bad")
+        st_kpi("Saldo no período", fmt_brl(saldo), sub="Entradas - Saídas", badge=badge)
+    with cD:
+        final_real = float(fluxo_disp["SALDO_ACUM"].iloc[-1])
+        badge = ("positivo", "good") if final_real >= 0 else ("negativo", "bad")
+        st_kpi("Saldo acumulado", fmt_brl(final_real), sub="Conciliação", badge=badge)
+
+    st.markdown("### Tabela do fluxo (por dia)")
+    fluxo_tbl_show = fluxo_disp.copy()
+    for c in ["ENTRADAS", "SAIDAS", "SALDO_DIA", "SALDO_ACUM"]:
+        fluxo_tbl_show[c] = fluxo_tbl_show[c].apply(fmt_brl)
+    st.dataframe(fluxo_tbl_show, use_container_width=True, hide_index=True)
+
+    st.stop()
+
 
     # =========================================================
     # PRIORIDADE: usar a aba 7. Conciliação (já tem o "saldo acumulado do mês"
