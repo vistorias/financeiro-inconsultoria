@@ -1324,15 +1324,6 @@ elif page.startswith("💧"):
 
         st.markdown("<div class='hr'></div>", unsafe_allow_html=True)
         cA, cB, cC, cD, cE = st.columns(5)
-        with cA:
-            st_kpi("Entradas", fmt_brl(fluxo_disp["ENTRADAS"].sum()), sub="Somatório no período")
-        with cB:
-            st_kpi("Saídas", fmt_brl(fluxo_disp["SAIDAS"].sum()), sub="Somatório no período")
-        with cC:
-            saldo = float(fluxo_disp["SALDO_DIA"].sum())
-            badge = ("positivo", "good") if saldo >= 0 else ("negativo", "bad")
-            st_kpi("Saldo no período", fmt_brl(saldo), sub="Entradas - Saídas", badge=badge)
-                cA, cB, cC, cD, cE = st.columns(5)
 
         with cA:
             st_kpi("Entradas", fmt_brl(fluxo_disp["ENTRADAS"].sum()), sub="Somatório no período")
@@ -1349,8 +1340,7 @@ elif page.startswith("💧"):
             saldo_filtro = float(fluxo_disp["SALDO_ACUM"].iloc[-1])
             badge = ("positivo", "good") if saldo_filtro >= 0 else ("negativo", "bad")
             st_kpi("Saldo acumulado (filtro)", fmt_brl(saldo_filtro), sub="Bancos filtrados", badge=badge)
-
-        def get_saldo_bancos(df):
+            def get_saldo_bancos(df):
             for i in range(len(df)):
                 for j in range(len(df.columns)):
                     txt = str(df.iloc[i, j]).upper()
@@ -1364,9 +1354,10 @@ elif page.startswith("💧"):
         saldo_todos = get_saldo_bancos(df_conc_raw)
 
         with cE:
-            if saldo_todos:
+            if saldo_todos is not None:
                 badge = ("positivo", "good") if saldo_todos >= 0 else ("negativo", "bad")
                 st_kpi("Saldo acumulado (todos)", fmt_brl(saldo_todos), sub="Todos os bancos", badge=badge)
+
         st.markdown("### Tabela do fluxo (por dia)")
         fluxo_tbl_show = fluxo_disp.copy()
         for c in ["ENTRADAS", "SAIDAS", "SALDO_DIA", "SALDO_ACUM"]:
@@ -1374,7 +1365,6 @@ elif page.startswith("💧"):
         st.dataframe(fluxo_tbl_show, use_container_width=True, hide_index=True)
 
         st.stop()
-
 
         # 2) FALLBACK (AUTOMÁTICO): CALCULA PELO HISTÓRICO + SALDO INICIAL
         # Isso garante que o fluxo nunca fique "vazio" só porque a aba 7 não foi reconhecida.
