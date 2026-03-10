@@ -1333,10 +1333,10 @@ elif page.startswith("💧"):
             badge = ("positivo", "good") if saldo >= 0 else ("negativo", "bad")
             st_kpi("Saldo no período", fmt_brl(saldo), sub="Entradas - Saídas", badge=badge)
         with cD:
-# saldo acumulado considerando os bancos filtrados
+            # saldo acumulado considerando os bancos filtrados
 saldo_filtro = float(fluxo_disp["SALDO_ACUM"].iloc[-1])
 
-# saldo acumulado geral (todos os bancos) vindo da aba conciliação
+# saldo acumulado geral (todos os bancos)
 def get_saldo_bancos(df):
     for i in range(len(df)):
         for j in range(len(df.columns)):
