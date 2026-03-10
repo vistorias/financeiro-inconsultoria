@@ -1332,29 +1332,41 @@ elif page.startswith("💧"):
             saldo = float(fluxo_disp["SALDO_DIA"].sum())
             badge = ("positivo", "good") if saldo >= 0 else ("negativo", "bad")
             st_kpi("Saldo no período", fmt_brl(saldo), sub="Entradas - Saídas", badge=badge)
-       with cD:
-    saldo_filtro = float(fluxo_disp["SALDO_ACUM"].iloc[-1])
-    badge = ("positivo", "good") if saldo_filtro >= 0 else ("negativo", "bad")
-    st_kpi("Saldo acumulado (filtro)", fmt_brl(saldo_filtro), sub="Bancos filtrados", badge=badge)
+                cA, cB, cC, cD, cE = st.columns(5)
 
-def get_saldo_bancos(df):
-    for i in range(len(df)):
-        for j in range(len(df.columns)):
-            txt = str(df.iloc[i, j]).upper()
-            if "SALDO ACUMULADO" in txt and "BANCO" in txt:
-                try:
-                    return money_to_float(df.iloc[i, j+1])
-                except:
-                    pass
-    return None
+        with cA:
+            st_kpi("Entradas", fmt_brl(fluxo_disp["ENTRADAS"].sum()), sub="Somatório no período")
 
-saldo_todos = get_saldo_bancos(df_conc_raw)
+        with cB:
+            st_kpi("Saídas", fmt_brl(fluxo_disp["SAIDAS"].sum()), sub="Somatório no período")
 
-with cE:
-    if saldo_todos:
-        badge = ("positivo", "good") if saldo_todos >= 0 else ("negativo", "bad")
-        st_kpi("Saldo acumulado (todos)", fmt_brl(saldo_todos), sub="Todos os bancos", badge=badge)
+        with cC:
+            saldo = float(fluxo_disp["SALDO_DIA"].sum())
+            badge = ("positivo", "good") if saldo >= 0 else ("negativo", "bad")
+            st_kpi("Saldo no período", fmt_brl(saldo), sub="Entradas - Saídas", badge=badge)
 
+        with cD:
+            saldo_filtro = float(fluxo_disp["SALDO_ACUM"].iloc[-1])
+            badge = ("positivo", "good") if saldo_filtro >= 0 else ("negativo", "bad")
+            st_kpi("Saldo acumulado (filtro)", fmt_brl(saldo_filtro), sub="Bancos filtrados", badge=badge)
+
+        def get_saldo_bancos(df):
+            for i in range(len(df)):
+                for j in range(len(df.columns)):
+                    txt = str(df.iloc[i, j]).upper()
+                    if "SALDO ACUMULADO" in txt and "BANCO" in txt:
+                        try:
+                            return money_to_float(df.iloc[i, j + 1])
+                        except:
+                            pass
+            return None
+
+        saldo_todos = get_saldo_bancos(df_conc_raw)
+
+        with cE:
+            if saldo_todos:
+                badge = ("positivo", "good") if saldo_todos >= 0 else ("negativo", "bad")
+                st_kpi("Saldo acumulado (todos)", fmt_brl(saldo_todos), sub="Todos os bancos", badge=badge)
         st.markdown("### Tabela do fluxo (por dia)")
         fluxo_tbl_show = fluxo_disp.copy()
         for c in ["ENTRADAS", "SAIDAS", "SALDO_DIA", "SALDO_ACUM"]:
