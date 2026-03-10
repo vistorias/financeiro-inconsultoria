@@ -1341,14 +1341,16 @@ elif page.startswith("💧"):
             badge = ("positivo", "good") if saldo_filtro >= 0 else ("negativo", "bad")
             st_kpi("Saldo acumulado (filtro)", fmt_brl(saldo_filtro), sub="Bancos filtrados", badge=badge)
             def get_saldo_bancos(df):
-            for i in range(len(df)):
-                for j in range(len(df.columns)):
-                    txt = str(df.iloc[i, j]).upper()
-                    if "SALDO ACUMULADO" in txt and "BANCO" in txt:
-                        try:
-                            return money_to_float(df.iloc[i, j + 1])
-                        except:
-                            pass
+                for i in range(len(df)):
+                    for j in range(len(df.columns)):
+                        txt = str(df.iloc[i, j]).upper()
+                        
+                        if "SALDO ACUMULADO" in txt and "BANCO" in txt:
+                            try:
+                                return money_to_float(df.iloc[i, j + 1])
+                            except:
+                                pass
+                                
             return None
 
         saldo_todos = get_saldo_bancos(df_conc_raw)
