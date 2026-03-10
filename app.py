@@ -1323,7 +1323,7 @@ elif page.startswith("💧"):
         st.altair_chart(chart, use_container_width=True)
 
         st.markdown("<div class='hr'></div>", unsafe_allow_html=True)
-        cA, cB, cC, cD = st.columns(4)
+        cA, cB, cC, cD, cE = st.columns(5)
         with cA:
             st_kpi("Entradas", fmt_brl(fluxo_disp["ENTRADAS"].sum()), sub="Somatório no período")
         with cB:
