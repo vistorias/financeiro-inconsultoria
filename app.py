@@ -1124,7 +1124,7 @@ elif page.startswith("💚"):
         show["AH_%"] = show["AH_%"].apply(lambda v: "" if pd.isna(v) else f"{v*100:.1f}%")
         show["AV_%"] = show["AV_%"].apply(lambda v: "" if pd.isna(v) else f"{v*100:.1f}%")
         st.dataframe(show, use_container_width=True, hide_index=True)
-        elif page.startswith("💸"):
+elif page.startswith("💸"):
     st.markdown("<div class='hr'></div>", unsafe_allow_html=True)
     st.markdown("## Saídas — visão analítica")
 
