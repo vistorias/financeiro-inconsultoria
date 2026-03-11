@@ -1347,7 +1347,7 @@ elif page.startswith("💧"):
             conc_tbl["DATA"] = conc_tbl["DIA"].apply(lambda d: date(y_sel, m_sel, int(d)))
 
             if dt_ini and dt_fim and (not conc_tbl.empty):
-                conc_tbl = conc_tbl[(conc_tbl["DATA"] >= dt_ini) & (conc_tbl["DATA"] <= dt
+                conc_tbl = conc_tbl[(conc_tbl["DATA"] >= dt_ini) & (conc_tbl["DATA"] <= dt_fim)].copy()
 
 elif page.startswith("⏳"):
     st.markdown("<div class='hr'></div>", unsafe_allow_html=True)
