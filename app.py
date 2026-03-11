@@ -1283,13 +1283,13 @@ def compute_fluxo_caixa(df_ent: pd.DataFrame, df_sai: pd.DataFrame) -> pd.DataFr
     base["YM"] = base["DATA"].apply(to_ym)
     return base
     def compute_saldo_bancos(
-    df_ent_all: pd.DataFrame,
-    df_sai_all: pd.DataFrame,
-    df_trf_all: pd.DataFrame,
-    df_saldo_ini: pd.DataFrame,
-    base_date: Optional[date],
+        df_ent_all: pd.DataFrame,
+        df_sai_all: pd.DataFrame,
+        df_trf_all: pd.DataFrame,
+        df_saldo_ini: pd.DataFrame,
+        base_date: Optional[date],
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    """Movimentação e saldo por banco (diário), com acumulado REAL ao longo do histórico.
+    """Movimentação e saldo por banco (diário), com acumulado real ao longo do histórico.
 
     Regra:
       SALDO_REAL(dia) = SALDO_INICIAL + cumsum(ENTRADAS - SAIDAS + TRF_IN - TRF_OUT) desde base_date.
@@ -1298,12 +1298,18 @@ def compute_fluxo_caixa(df_ent: pd.DataFrame, df_sai: pd.DataFrame) -> pd.DataFr
       mv_daily: DATA, BANCO, ENTRADAS, SAIDAS, TRF_IN, TRF_OUT, SALDO_DIA, SALDO_REAL, SALDO_INICIAL
       resumo:   BANCO, SALDO_INICIAL, SALDO_MOV, SALDO_REAL_FINAL
     """
-    # mapa de saldo inicial
-    saldo_ini_map = {}
-    if df_saldo_ini is not None and not df_saldo_ini.empty and {"BANCO", "SALDO"}.issubset(df_saldo_ini.columns):
-        saldo_ini_map = {str(k).upper().strip(): float(v) for k, v in df_saldo_ini[["BANCO", "SALDO"]].values}
 
-    # corta histórico a partir do saldo base (se existir)
+    saldo_ini_map = {}
+    if (
+        df_saldo_ini is not None
+        and not df_saldo_ini.empty
+        and {"BANCO", "SALDO"}.issubset(df_saldo_ini.columns)
+    ):
+        saldo_ini_map = {
+            str(k).upper().strip(): float(v)
+            for k, v in df_saldo_ini[["BANCO", "SALDO"]].values
+        }
+
     def _cut(df: pd.DataFrame, col: str) -> pd.DataFrame:
         if df is None or df.empty or col not in df.columns:
             return pd.DataFrame(columns=df.columns if df is not None else [])
@@ -1316,41 +1322,127 @@ def compute_fluxo_caixa(df_ent: pd.DataFrame, df_sai: pd.DataFrame) -> pd.DataFr
     df_sai_all = _cut(df_sai_all, "DATA_REF")
     df_trf_all = _cut(df_trf_all, "DATA")
 
-    # movimentos por dia/banco
     ent = pd.DataFrame(columns=["DATA", "BANCO", "ENTRADAS"])
-    if (df_ent_all is not None) and (not df_ent_all.empty) and {"DATA", "BANCO", "VALOR"}.issubset(df_ent_all.columns):
+    if (
+        df_ent_all is not None
+        and not df_ent_all.empty
+        and {"DATA", "BANCO", "VALOR"}.issubset(df_ent_all.columns)
+    ):
         tmp = df_ent_all.copy()
         tmp["BANCO"] = tmp["BANCO"].astype(str).map(_upper)
-        ent = tmp.groupby(["DATA", "BANCO"], as_index=False)["VALOR"].sum().rename(columns={"VALOR": "ENTRADAS"})
+        ent = (
+            tmp.groupby(["DATA", "BANCO"], as_index=False)["VALOR"]
+            .sum()
+            .rename(columns={"VALOR": "ENTRADAS"})
+        )
 
     sai = pd.DataFrame(columns=["DATA", "BANCO", "SAIDAS"])
-    if (df_sai_all is not None) and (not df_sai_all.empty) and {"DATA_REF", "BANCO", "VALOR"}.issubset(df_sai_all.columns):
+    if (
+        df_sai_all is not None
+        and not df_sai_all.empty
+        and {"DATA_REF", "BANCO", "VALOR"}.issubset(df_sai_all.columns)
+    ):
         tmp = df_sai_all.copy()
         tmp["BANCO"] = tmp["BANCO"].astype(str).map(_upper)
-        sai = tmp.groupby(["DATA_REF", "BANCO"], as_index=False)["VALOR"].sum().rename(columns={"DATA_REF": "DATA", "VALOR": "SAIDAS"})
+        sai = (
+            tmp.groupby(["DATA_REF", "BANCO"], as_index=False)["VALOR"]
+            .sum()
+            .rename(columns={"DATA_REF": "DATA", "VALOR": "SAIDAS"})
+        )
 
     trf_in = pd.DataFrame(columns=["DATA", "BANCO", "TRF_IN"])
     trf_out = pd.DataFrame(columns=["DATA", "BANCO", "TRF_OUT"])
-    if (df_trf_all is not None) and (not df_trf_all.empty) and {"DATA", "VALOR"}.issubset(df_trf_all.columns):
+    if (
+        df_trf_all is not None
+        and not df_trf_all.empty
+        and {"DATA", "VALOR"}.issubset(df_trf_all.columns)
+    ):
         tmp = df_trf_all.copy()
+
         if "DESTINO" in tmp.columns:
             tmp["DESTINO"] = tmp["DESTINO"].astype(str).map(_upper)
-            trf_in = tmp.groupby(["DATA", "DESTINO"], as_index=False)["VALOR"].sum().rename(columns={"DESTINO": "BANCO", "VALOR": "TRF_IN"})
+            trf_in = (
+                tmp.groupby(["DATA", "DESTINO"], as_index=False)["VALOR"]
+                .sum()
+                .rename(columns={"DESTINO": "BANCO", "VALOR": "TRF_IN"})
+            )
+
         if "ORIGEM" in tmp.columns:
             tmp["ORIGEM"] = tmp["ORIGEM"].astype(str).map(_upper)
-            trf_out = tmp.groupby(["DATA", "ORIGEM"], as_index=False)["VALOR"].sum().rename(columns={"ORIGEM": "BANCO", "VALOR": "TRF_OUT"})
+            trf_out = (
+                tmp.groupby(["DATA", "ORIGEM"], as_index=False)["VALOR"]
+                .sum()
+                .rename(columns={"ORIGEM": "BANCO", "VALOR": "TRF_OUT"})
+            )
 
     mv = (
         ent.merge(sai, on=["DATA", "BANCO"], how="outer")
-           .merge(trf_in, on=["DATA", "BANCO"], how="outer")
-           .merge(trf_out, on=["DATA", "BANCO"], how="outer")
-           .fillna(0.0)
+        .merge(trf_in, on=["DATA", "BANCO"], how="outer")
+        .merge(trf_out, on=["DATA", "BANCO"], how="outer")
+        .fillna(0.0)
     )
 
     if mv.empty:
-        mv_daily = pd.DataFrame(columns=["DATA", "BANCO", "ENTRADAS", "SAIDAS", "TRF_IN", "TRF_OUT", "SALDO_DIA", "SALDO_REAL", "SALDO_INICIAL"])
-        resumo = pd.DataFrame(columns=["BANCO", "SALDO_INICIAL", "SALDO_MOV", "SALDO_REAL_FINAL"])
+        mv_daily = pd.DataFrame(
+            columns=[
+                "DATA",
+                "BANCO",
+                "ENTRADAS",
+                "SAIDAS",
+                "TRF_IN",
+                "TRF_OUT",
+                "SALDO_DIA",
+                "SALDO_REAL",
+                "SALDO_INICIAL",
+            ]
+        )
+        resumo = pd.DataFrame(
+            columns=["BANCO", "SALDO_INICIAL", "SALDO_MOV", "SALDO_REAL_FINAL"]
+        )
         return mv_daily, resumo
+
+    mv["SALDO_DIA"] = mv["ENTRADAS"] - mv["SAIDAS"] + mv["TRF_IN"] - mv["TRF_OUT"]
+    mv["BANCO"] = mv["BANCO"].astype(str).map(_upper)
+
+    dmin = mv["DATA"].min()
+    dmax = mv["DATA"].max()
+    if base_date is not None and pd.notna(dmin):
+        dmin = max(dmin, base_date)
+
+    all_dates = pd.date_range(pd.to_datetime(dmin), pd.to_datetime(dmax), freq="D")
+
+    pieces = []
+    for bank, g in mv.groupby("BANCO"):
+        g = g.sort_values("DATA").copy()
+        g_idx = pd.to_datetime(g["DATA"])
+        base = pd.DataFrame(index=all_dates)
+
+        for col in ["ENTRADAS", "SAIDAS", "TRF_IN", "TRF_OUT", "SALDO_DIA"]:
+            s = pd.Series(g[col].values, index=g_idx)
+            base[col] = s.reindex(all_dates).fillna(0.0)
+
+        ini = float(saldo_ini_map.get(str(bank).upper().strip(), 0.0))
+        base["SALDO_INICIAL"] = ini
+        base["SALDO_REAL"] = ini + base["SALDO_DIA"].cumsum()
+
+        base = base.reset_index().rename(columns={"index": "DATA"})
+        base["DATA"] = base["DATA"].dt.date
+        base["BANCO"] = bank
+        pieces.append(base)
+
+    mv_daily = pd.concat(pieces, ignore_index=True) if pieces else pd.DataFrame()
+
+    resumo = (
+        mv_daily.groupby("BANCO", as_index=False)
+        .agg(
+            SALDO_INICIAL=("SALDO_INICIAL", "max"),
+            SALDO_MOV=("SALDO_DIA", "sum"),
+            SALDO_REAL_FINAL=("SALDO_REAL", "last"),
+        )
+        .sort_values("SALDO_REAL_FINAL", ascending=False)
+    )
+
+    return mv_daily, resumo
 
     mv["SALDO_DIA"] = mv["ENTRADAS"] - mv["SAIDAS"] + mv["TRF_IN"] - mv["TRF_OUT"]
     mv["BANCO"] = mv["BANCO"].astype(str).map(_upper)
