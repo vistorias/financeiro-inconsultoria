@@ -654,6 +654,43 @@ def parse_saldo_inicial_sheet(df: pd.DataFrame) -> Tuple[Optional[date], pd.Data
     out = out.groupby("BANCO", as_index=False)["SALDO"].sum()
     return base_date, out
 
+def parse_saldo_inicial_diario(df_raw: pd.DataFrame) -> pd.DataFrame:
+    """
+    Lê a aba 1. Saldo Inicial como lançamentos diários.
+    Estrutura esperada:
+    - coluna A: banco
+    - coluna B: valor
+    - coluna C: dia
+    - coluna D: ano
+    - coluna E: mes
+    """
+    cols = ["BANCO", "VALOR", "DIA", "ANO", "MES"]
+    if df_raw is None or df_raw.empty or len(df_raw.columns) < 5:
+        return pd.DataFrame(columns=["BANCO", "DATA", "VALOR"])
+
+    x = df_raw.iloc[:, :5].copy()
+    x.columns = cols
+
+    x["BANCO"] = x["BANCO"].astype(str).map(_upper)
+    x["VALOR"] = x["VALOR"].apply(money_to_float)
+    x["DIA"] = pd.to_numeric(x["DIA"], errors="coerce")
+    x["ANO"] = pd.to_numeric(x["ANO"], errors="coerce")
+    x["MES"] = pd.to_numeric(x["MES"], errors="coerce")
+
+    x = x.dropna(subset=["DIA", "ANO", "MES"]).copy()
+    x = x[(x["BANCO"] != "") & (x["VALOR"] != 0)].copy()
+
+    def _mk_date(r):
+        try:
+            return date(int(r["ANO"]), int(r["MES"]), int(r["DIA"]))
+        except Exception:
+            return pd.NaT
+
+    x["DATA"] = x.apply(_mk_date, axis=1)
+    x = x[x["DATA"].notna()].copy()
+
+    return x[["BANCO", "DATA", "VALOR"]].copy()
+
 
 def compute_fluxo_caixa(df_ent: pd.DataFrame, df_sai: pd.DataFrame) -> pd.DataFrame:
     ent_day = (
@@ -932,6 +969,7 @@ df_sai = normalize_saidas(df_sai_raw)
 df_trf = normalize_transferencias(df_trf_raw)
 conc_year, conc_month, conc_bank, conc_tbl_all = normalize_conciliacao(df_conc_raw)
 saldo_base_date, df_saldo_ini = parse_saldo_inicial_sheet(df_saldo_raw)
+df_saldo_ini_diario = parse_saldo_inicial_diario(df_saldo_raw)
 
 months = sorted(list(set([m for m in df_ent.get("YM", []) if m] + [m for m in df_sai.get("YM", []) if m])))
 if not months:
@@ -1445,6 +1483,7 @@ if conc_tbl is not None and (not conc_tbl.empty):
     ent_hist = df_ent.copy()
     sai_hist = df_sai.copy()
     trf_hist = df_trf.copy()
+    saldo_ini_hist = df_saldo_ini_diario.copy()
 
     if capt_sel and ("CAPTACAO" in ent_hist.columns):
         ent_hist = ent_hist[ent_hist["CAPTACAO"].isin([_upper(x) for x in capt_sel])].copy()
@@ -1458,6 +1497,9 @@ if conc_tbl is not None and (not conc_tbl.empty):
         if (not sai_hist.empty) and ("BANCO" in sai_hist.columns):
             sai_hist = sai_hist[sai_hist["BANCO"].isin(bset)].copy()
 
+        if (saldo_ini_hist is not None) and (not saldo_ini_hist.empty) and ("BANCO" in saldo_ini_hist.columns):
+        saldo_ini_hist = saldo_ini_hist[saldo_ini_hist["BANCO"].isin(bset)].copy()
+
         if not trf_hist.empty:
             if "ORIGEM" in trf_hist.columns and "DESTINO" in trf_hist.columns:
                 trf_hist = trf_hist[
@@ -1467,6 +1509,24 @@ if conc_tbl is not None and (not conc_tbl.empty):
                 trf_hist = trf_hist[trf_hist["ORIGEM"].isin(bset)].copy()
             elif "DESTINO" in trf_hist.columns:
                 trf_hist = trf_hist[trf_hist["DESTINO"].isin(bset)].copy()
+
+    if saldo_ini_hist is not None and not saldo_ini_hist.empty:
+    extra_ent = saldo_ini_hist.copy()
+    extra_ent["YM"] = extra_ent["DATA"].apply(to_ym)
+    extra_ent["VENCIMENTO"] = pd.NaT
+    extra_ent["CAPTACAO"] = ""
+    extra_ent["CLIENTE"] = "SALDO INICIAL"
+    extra_ent["PLANO_CONTAS"] = "SALDO INICIAL"
+    extra_ent["MEIO"] = ""
+    extra_ent["AREA"] = ""
+    extra_ent["PRODUTO"] = ""
+    extra_ent["DESCRICAO"] = "SALDO INICIAL DIÁRIO"
+
+    extra_ent = extra_ent[
+        ["DATA", "YM", "VENCIMENTO", "BANCO", "CAPTACAO", "CLIENTE", "PLANO_CONTAS", "MEIO", "AREA", "PRODUTO", "DESCRICAO", "VALOR"]
+    ].copy()
+
+    ent_hist = pd.concat([ent_hist, extra_ent], ignore_index=True)
 
     mv_banks_daily, resumo_banks = compute_saldo_bancos(
         ent_hist, sai_hist, trf_hist, df_saldo_ini, saldo_base_date
