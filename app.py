@@ -832,21 +832,22 @@ def last_point_label(df: pd.DataFrame, xcol: str, ycol: str, label: str = None):
     return d
 
 def get_prev_month_balance_from_dados(
-    df_dados_raw: pd.DataFrame,
+    dados_raw: List[List[str]],
     bancos: List[str],
     ym_focus: str
 ) -> float:
     """
-    Replica a lógica da aba 7 -> H1:
+    Replica a lógica da fórmula:
     =PROCH(AU6&AW6;Dados!D16:EE34;3+Dados!B17;0)
 
-    Estrutura da aba Dados:
-    - linha 16: códigos de mês (20221, 20222, ..., 20263 etc.)
-    - coluna B (linhas 19:34): bancos
-    - coluna C (linhas 19:34): índice do banco
-    - matriz de valores: D19:EE34
+    Leitura bruta da aba Dados:
+    - linha 16 da planilha  -> índice 15
+    - linha 17 da planilha  -> índice 16
+    - linhas dos bancos     -> 18 em diante
+    - nomes dos bancos na coluna B -> índice 1
+    - matriz começa na coluna D    -> índice 3
     """
-    if df_dados_raw is None or df_dados_raw.empty or not bancos or not ym_focus:
+    if not dados_raw or not bancos or not ym_focus:
         return 0.0
 
     try:
@@ -855,7 +856,6 @@ def get_prev_month_balance_from_dados(
     except Exception:
         return 0.0
 
-    # mesmo raciocínio de AU6 e AW6
     if mes_atual == 1:
         ano_ref = ano_atual - 1
         mes_ref = 12
@@ -863,48 +863,39 @@ def get_prev_month_balance_from_dados(
         ano_ref = ano_atual
         mes_ref = mes_atual - 1
 
-    # concatenação no mesmo formato da linha 16
     target_code = f"{ano_ref}{mes_ref}"
+    bancos_upper = [_upper(b) for b in bancos]
 
-    x = df_dados_raw.copy()
-    x = x.replace("", np.nan).fillna("")
+    try:
+        # linha 16 da planilha: códigos dos meses
+        row_codes = dados_raw[15]
+    except Exception:
+        return 0.0
 
-    # como read_tab usa a primeira linha como header,
-    # a "linha 16" da planilha real vira uma linha de dados dentro do dataframe.
-    # vamos localizar a linha que contém os códigos do tipo 20262 / 20263 / etc.
-    code_row_idx = None
-    for i in range(len(x)):
-        vals = [str(v).strip() for v in x.iloc[i].tolist()]
-        if target_code in vals:
-            code_row_idx = i
+    # procurar a coluna do código do mês anterior
+    target_col_idx = None
+    for j, v in enumerate(row_codes):
+        if str(v).strip() == target_code:
+            target_col_idx = j
             break
 
-    if code_row_idx is None:
+    if target_col_idx is None:
         return 0.0
 
-    # localizar colunas onde o código do mês anterior aparece
-    target_cols = []
-    for col_idx in range(len(x.columns)):
-        val = str(x.iloc[code_row_idx, col_idx]).strip()
-        if val == target_code:
-            target_cols.append(col_idx)
-
-    if not target_cols:
-        return 0.0
-
-    # localizar as linhas dos bancos (Sicredi, Nubank etc.)
-    bancos_upper = [_upper(b) for b in bancos]
     saldo_total = 0.0
 
-    for i in range(len(x)):
-        bank_name = str(x.iloc[i, 1]).strip() if len(x.columns) > 1 else ""
-        # coluna B da planilha vira índice 1 no dataframe
+    # bancos começam na linha 19 da planilha -> índice 18
+    for i in range(18, len(dados_raw)):
+        row = dados_raw[i]
+        if len(row) <= max(1, target_col_idx):
+            continue
+
+        bank_name = row[1].strip() if len(row) > 1 else ""
         if _upper(bank_name) not in bancos_upper:
             continue
 
-        for col_idx in target_cols:
-            saldo_val = x.iloc[i, col_idx]
-            saldo_total += money_to_float(saldo_val)
+        saldo_val = row[target_col_idx]
+        saldo_total += money_to_float(saldo_val)
 
     return float(saldo_total)
 
@@ -1524,7 +1515,7 @@ if conc_tbl is not None and (not conc_tbl.empty):
 
         with cD:
             saldo_base_filtro = get_prev_month_balance_from_dados(
-                df_dados_raw=df_dados_raw,
+                dados_raw=dados_raw,
                 bancos=banco_sel,
                 ym_focus=ym_focus
             )
