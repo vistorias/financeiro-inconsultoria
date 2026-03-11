@@ -1498,7 +1498,7 @@ if conc_tbl is not None and (not conc_tbl.empty):
             sai_hist = sai_hist[sai_hist["BANCO"].isin(bset)].copy()
 
         if (saldo_ini_hist is not None) and (not saldo_ini_hist.empty) and ("BANCO" in saldo_ini_hist.columns):
-        saldo_ini_hist = saldo_ini_hist[saldo_ini_hist["BANCO"].isin(bset)].copy()
+            saldo_ini_hist = saldo_ini_hist[saldo_ini_hist["BANCO"].isin(bset)].copy()
 
         if not trf_hist.empty:
             if "ORIGEM" in trf_hist.columns and "DESTINO" in trf_hist.columns:
