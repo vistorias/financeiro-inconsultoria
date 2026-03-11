@@ -1283,11 +1283,11 @@ def compute_fluxo_caixa(df_ent: pd.DataFrame, df_sai: pd.DataFrame) -> pd.DataFr
     base["YM"] = base["DATA"].apply(to_ym)
     return base
     def compute_saldo_bancos(
-        df_ent_all: pd.DataFrame,
-        df_sai_all: pd.DataFrame,
-        df_trf_all: pd.DataFrame,
-        df_saldo_ini: pd.DataFrame,
-        base_date: Optional[date],
+    df_ent_all: pd.DataFrame,
+    df_sai_all: pd.DataFrame,
+    df_trf_all: pd.DataFrame,
+    df_saldo_ini: pd.DataFrame,
+    base_date: Optional[date],
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """Movimentação e saldo por banco (diário), com acumulado real ao longo do histórico.
 
