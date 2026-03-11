@@ -306,6 +306,15 @@ def read_tab(sheet_id: str, tab: str) -> pd.DataFrame:
     df = df.replace("", np.nan).dropna(how="all").fillna("")
     return df
 
+@st.cache_data(ttl=300, show_spinner=False)
+def read_tab_raw(sheet_id: str, tab: str) -> List[List[str]]:
+    sh = client.open_by_key(sheet_id)
+    try:
+        ws = sh.worksheet(tab)
+    except Exception:
+        return []
+    values = ws.get_all_values()
+    return values if values else []
 
 # ====================== NORMALIZERS ======================
 
@@ -924,7 +933,7 @@ with st.spinner("Carregando planilha..."):
     df_trf_raw = read_tab(SHEET_ID, TAB_TRF)
     df_conc_raw = read_tab(SHEET_ID, TAB_CONC)
     df_saldo_raw = read_tab(SHEET_ID, TAB_SALDO_INI)
-    df_dados_raw = read_tab(SHEET_ID, "Dados")
+    dados_raw = read_tab_raw(SHEET_ID, "Dados")
 
 df_ent = normalize_entradas(df_ent_raw)
 df_sai = normalize_saidas(df_sai_raw)
