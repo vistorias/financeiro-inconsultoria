@@ -1437,10 +1437,29 @@ if conc_tbl is not None and (not conc_tbl.empty):
             st_kpi("Saldo no período", fmt_brl(saldo), sub="Entradas - Saídas", badge=badge)
 
         with cD:
-            saldo_filtro = float(fluxo_disp.sort_values("DATA")["SALDO_REAL"].iloc[-1])
-            badge = ("positivo", "good") if saldo_filtro >= 0 else ("negativo", "bad")
-            st_kpi("Saldo acumulado (filtro)", fmt_brl(saldo_filtro), sub="Calculado pelas abas 1, 4, 5 e 6", badge=badge)
+            saldo_base_filtro = 0.0
 
+            if df_saldo_ini is not None and not df_saldo_ini.empty:
+                base_saldos = df_saldo_ini.copy()
+
+                if banco_sel:
+                    base_saldos = base_saldos[
+                        base_saldos["BANCO"].isin([_upper(x) for x in banco_sel])
+                    ].copy()
+
+                if not base_saldos.empty:
+                    saldo_base_filtro = float(base_saldos["SALDO"].sum())
+
+            saldo_periodo = float(fluxo_disp["SALDO_DIA"].sum())
+            saldo_filtro = saldo_base_filtro + saldo_periodo
+
+            badge = ("positivo", "good") if saldo_filtro >= 0 else ("negativo", "bad")
+            st_kpi(
+                "Saldo acumulado (filtro)",
+                fmt_brl(saldo_filtro),
+                sub="Saldo final mês anterior + saldo no período",
+                badge=badge
+            )
         with cE:
             if saldo_todos is not None:
                 badge = ("positivo", "good") if saldo_todos >= 0 else ("negativo", "bad")
