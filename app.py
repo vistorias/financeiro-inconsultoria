@@ -822,6 +822,69 @@ def last_point_label(df: pd.DataFrame, xcol: str, ycol: str, label: str = None):
         d["SÉRIE"] = label
     return d
 
+def get_prev_month_balance_from_dados(
+    df_dados_raw: pd.DataFrame,
+    bancos: List[str],
+    ym_focus: str
+) -> float:
+    """
+    Replica a lógica da aba 7. Conciliação -> célula H1,
+    que busca na aba Dados o saldo final do mês anterior por banco.
+
+    ym_focus: mês atual selecionado no formato YYYY-MM
+    bancos: bancos filtrados
+    retorna: soma do saldo final do mês anterior dos bancos filtrados
+    """
+    if df_dados_raw is None or df_dados_raw.empty or not bancos or not ym_focus:
+        return 0.0
+
+    try:
+        ano_atual = int(ym_focus[:4])
+        mes_atual = int(ym_focus[5:7])
+    except Exception:
+        return 0.0
+
+    if mes_atual == 1:
+        ano_ref = ano_atual - 1
+        mes_ref = 12
+    else:
+        ano_ref = ano_atual
+        mes_ref = mes_atual - 1
+
+    x = df_dados_raw.copy()
+    x = x.replace("", np.nan).dropna(how="all").fillna("")
+
+    cols = list(x.columns)
+
+    bank_row_idx = None
+    for i in range(len(x)):
+        vals = [str(v).strip() for v in x.iloc[i].tolist()]
+        vals_up = [_upper(v) for v in vals]
+        if "SICREDI" in vals_up or "NUBANK" in vals_up:
+            bank_row_idx = i
+            break
+
+    if bank_row_idx is None:
+        return 0.0
+
+    code_row_idx = max(bank_row_idx - 2, 0)
+    target_code = f"{ano_ref}{mes_ref}"
+
+    saldo_total = 0.0
+    bancos_upper = [_upper(b) for b in bancos]
+
+    for col_idx, _ in enumerate(cols):
+        bank_name = str(x.iloc[bank_row_idx, col_idx]).strip()
+        if _upper(bank_name) not in bancos_upper:
+            continue
+
+        code_val = str(x.iloc[code_row_idx, col_idx]).strip()
+
+        if code_val == target_code:
+            saldo_val = x.iloc[bank_row_idx, col_idx]
+            saldo_total += money_to_float(saldo_val)
+
+    return float(saldo_total)
 
 # ====================== LOAD DATA ======================
 st.sidebar.markdown(f"### {COMPANY_NAME}")
@@ -848,6 +911,7 @@ with st.spinner("Carregando planilha..."):
     df_trf_raw = read_tab(SHEET_ID, TAB_TRF)
     df_conc_raw = read_tab(SHEET_ID, TAB_CONC)
     df_saldo_raw = read_tab(SHEET_ID, TAB_SALDO_INI)
+    df_dados_raw = read_tab(SHEET_ID, "Dados")
 
 df_ent = normalize_entradas(df_ent_raw)
 df_sai = normalize_saidas(df_sai_raw)
@@ -1437,18 +1501,11 @@ if conc_tbl is not None and (not conc_tbl.empty):
             st_kpi("Saldo no período", fmt_brl(saldo), sub="Entradas - Saídas", badge=badge)
 
         with cD:
-            saldo_base_filtro = 0.0
-
-            if df_saldo_ini is not None and not df_saldo_ini.empty:
-                base_saldos = df_saldo_ini.copy()
-
-                if banco_sel:
-                    base_saldos = base_saldos[
-                        base_saldos["BANCO"].isin([_upper(x) for x in banco_sel])
-                    ].copy()
-
-                if not base_saldos.empty:
-                    saldo_base_filtro = float(base_saldos["SALDO"].sum())
+            saldo_base_filtro = get_prev_month_balance_from_dados(
+                df_dados_raw=df_dados_raw,
+                bancos=banco_sel,
+                ym_focus=ym_focus
+            )
 
             saldo_periodo = float(fluxo_disp["SALDO_DIA"].sum())
             saldo_filtro = saldo_base_filtro + saldo_periodo
