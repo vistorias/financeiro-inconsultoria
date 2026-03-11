@@ -1333,178 +1333,21 @@ elif page.startswith("💧"):
     st.markdown("## Fluxo de Caixa")
 
     # =========================
-    # 1) TENTA USAR A ABA 7 (CONCILIAÇÃO) COMO VERDADE DO SALDO ACUMULADO
-    # Regras para usar:
-    # - apenas 1 mês selecionado
-    # - a aba 7 conseguiu ser interpretada (conc_tbl_all)
-    # - ano/mês da aba 7 bate com o mês selecionado
-    # - se houver filtro de banco, precisa ser apenas 1 banco e bater com o banco da conciliação (quando identificável)
+    # 1) TENTA USAR A ABA 7 (CONCILIAÇÃO)
+    # saldo acumulado (filtro) = última linha da tabela
+    # saldo acumulado (todos)  = quadro "Saldo Acumulado Bancos"
     # =========================
-
-    # --- Se houver conciliação (aba 7), usamos como VERDADE do saldo acumulado do mês ---
-    # Regra: quando o usuário seleciona APENAS 1 mês, a coluna "SALDO ACUMULADO MÊS"
-    # da aba 7 é o valor correto para SALDO_ACUM.
     conc_tbl = None
     try:
         use_conc = (len(ym_sels) == 1) and (conc_tbl_all is not None) and (not conc_tbl_all.empty)
         if use_conc:
-            # monta DATA a partir do mês selecionado + DIA
             y_sel = int(ym_sels[0][:4])
             m_sel = int(ym_sels[0][5:7])
             conc_tbl = conc_tbl_all.copy()
             conc_tbl["DATA"] = conc_tbl["DIA"].apply(lambda d: date(y_sel, m_sel, int(d)))
 
-            # recorte por período (date_input)
             if dt_ini and dt_fim and (not conc_tbl.empty):
-                conc_tbl = conc_tbl[(conc_tbl["DATA"] >= dt_ini) & (conc_tbl["DATA"] <= dt_fim)].copy()
-    except Exception:
-        conc_tbl = None
-
-    if conc_tbl is not None and (not conc_tbl.empty):
-        st.caption("Fonte do saldo acumulado: **7. Conciliação** (coluna 'Saldo acumulado mês').")
-
-        fluxo_disp = conc_tbl[["DATA", "ENTRADAS", "SAIDAS", "SALDO_DIA", "SALDO_ACUM"]].sort_values("DATA").copy()
-
-        melt = fluxo_disp.melt(
-            id_vars=["DATA"],
-            value_vars=["ENTRADAS", "SAIDAS", "SALDO_DIA"],
-            var_name="Métrica",
-            value_name="Valor",
-        )
-        melt["Métrica"] = melt["Métrica"].replace({"ENTRADAS": "Entradas", "SAIDAS": "Saídas", "SALDO_DIA": "Saldo do dia"})
-
-        chart = alt.Chart(melt).mark_line(point=True).encode(
-            x=alt.X("DATA:T", title="Data", axis=alt.Axis(format="%d/%m")),
-            y=alt.Y("Valor:Q", title="R$"),
-            color=alt.Color("Métrica:N", legend=alt.Legend(title="")),
-            tooltip=[alt.Tooltip("DATA:T", title="Data", format="%d/%m/%Y"), "Métrica", alt.Tooltip("Valor:Q", format=",.2f", title="R$")],
-        ).properties(height=320)
-        st.altair_chart(chart, use_container_width=True)
-
-        st.markdown("<div class='hr'></div>", unsafe_allow_html=True)
-        cA, cB, cC, cD, cE = st.columns(5)
-
-        with cA:
-            st_kpi("Entradas", fmt_brl(fluxo_disp["ENTRADAS"].sum()), sub="Somatório no período")
-
-        with cB:
-            st_kpi("Saídas", fmt_brl(fluxo_disp["SAIDAS"].sum()), sub="Somatório no período")
-
-        with cC:
-            saldo = float(fluxo_disp["SALDO_DIA"].sum())
-            badge = ("positivo", "good") if saldo >= 0 else ("negativo", "bad")
-            st_kpi("Saldo no período", fmt_brl(saldo), sub="Entradas - Saídas", badge=badge)
-
-        with cD:
-            saldo_filtro = float(fluxo_disp["SALDO_ACUM"].iloc[-1])
-            badge = ("positivo", "good") if saldo_filtro >= 0 else ("negativo", "bad")
-            st_kpi("Saldo acumulado (filtro)", fmt_brl(saldo_filtro), sub="Bancos filtrados", badge=badge)
-
-        def get_saldo_bancos(df):
-            for i in range(len(df)):
-                for j in range(len(df.columns)):
-                    txt = str(df.iloc[i, j]).upper()
-                    if "SALDO ACUMULADO" in txt and "BANCO" in txt:
-                        try:
-                            return money_to_float(df.iloc[i, j + 1])
-                        except:
-                            pass
-            return None
-
-        saldo_todos = get_saldo_bancos(df_conc_raw)
-
-        with cE:
-            if saldo_todos is not None:
-                badge = ("positivo", "good") if saldo_todos >= 0 else ("negativo", "bad")
-                st_kpi("Saldo acumulado (todos)", fmt_brl(saldo_todos), sub="Todos os bancos", badge=badge)
-
-        st.markdown("### Tabela do fluxo (por dia)")
-        fluxo_tbl_show = fluxo_disp.copy()
-        for c in ["ENTRADAS", "SAIDAS", "SALDO_DIA", "SALDO_ACUM"]:
-            fluxo_tbl_show[c] = fluxo_tbl_show[c].apply(fmt_brl)
-        st.dataframe(fluxo_tbl_show, use_container_width=True, hide_index=True)
-
-        st.stop()
-         # 2) FALLBACK (AUTOMÁTICO): CALCULA PELO HISTÓRICO + SALDO INICIAL
-    # Isso garante que o fluxo nunca fique "vazio" só porque a aba 7 não foi reconhecida.
-    # =========================
-    ent_hist = df_ent.copy()
-    sai_hist = df_sai.copy()
-    trf_hist = df_trf.copy()
-
-    # filtros (captação e banco) aplicados no histórico para refletir o que o usuário selecionou
-    if capt_sel and ("CAPTACAO" in ent_hist.columns):
-        ent_hist = ent_hist[ent_hist["CAPTACAO"].isin([_upper(x) for x in capt_sel])].copy()
-
-    if banco_sel:
-        bset = [_upper(x) for x in banco_sel]
-        if (not ent_hist.empty) and ("BANCO" in ent_hist.columns):
-            ent_hist = ent_hist[ent_hist["BANCO"].isin(bset)].copy()
-        if (not sai_hist.empty) and ("BANCO" in sai_hist.columns):
-            sai_hist = sai_hist[sai_hist["BANCO"].isin(bset)].copy()
-        if not trf_hist.empty:
-            # mantém transferências onde origem OU destino está no conjunto selecionado
-            if "ORIGEM" in trf_hist.columns and "DESTINO" in trf_hist.columns:
-                trf_hist = trf_hist[(trf_hist["ORIGEM"].isin(bset)) | (trf_hist["DESTINO"].isin(bset))].copy()
-
-    mv_banks_daily, resumo_banks = compute_saldo_bancos(ent_hist, sai_hist, trf_hist, df_saldo_ini, saldo_base_date)
-    fluxo_disp = build_fluxo_total_from_mv(mv_banks_daily, banco_sel, dt_ini, dt_fim)
-
-    if fluxo_disp.empty:
-        st.info("Sem dados suficientes para exibir o fluxo de caixa neste filtro.")
-    else:
-        melt = fluxo_disp.melt(
-            id_vars=["DATA"],
-            value_vars=["ENTRADAS", "SAIDAS", "SALDO_DIA"],
-            var_name="Métrica",
-            value_name="Valor",
-        )
-        melt["Métrica"] = melt["Métrica"].replace({"ENTRADAS": "Entradas", "SAIDAS": "Saídas", "SALDO_DIA": "Saldo do dia"})
-
-        chart = alt.Chart(melt).mark_line(point=True).encode(
-            x=alt.X("DATA:T", title="Data", axis=alt.Axis(format="%d/%m")),
-            y=alt.Y("Valor:Q", title="R$"),
-            color=alt.Color("Métrica:N", legend=alt.Legend(title="")),
-            tooltip=[
-                alt.Tooltip("DATA:T", title="Data", format="%d/%m/%Y"),
-                "Métrica",
-                alt.Tooltip("Valor:Q", format=",.2f", title="R$"),
-            ],
-        ).properties(height=320)
-        st.altair_chart(chart, use_container_width=True)
-
-        st.markdown("<div class='hr'></div>", unsafe_allow_html=True)
-        cA, cB, cC, cD = st.columns(4)
-        with cA:
-            st_kpi("Entradas", fmt_brl(fluxo_disp["ENTRADAS"].sum()), sub="Somatório no período")
-        with cB:
-            st_kpi("Saídas", fmt_brl(fluxo_disp["SAIDAS"].sum()), sub="Somatório no período")
-        with cC:
-            saldo = float(fluxo_disp["SALDO_DIA"].sum())
-            badge = ("positivo", "good") if saldo >= 0 else ("negativo", "bad")
-            st_kpi("Saldo no período", fmt_brl(saldo), sub="Entradas - Saídas", badge=badge)
-        with cD:
-            final_real = float(fluxo_disp.sort_values("DATA")["SALDO_REAL"].iloc[-1])
-            badge = ("positivo", "good") if final_real >= 0 else ("negativo", "bad")
-            st_kpi("Saldo acumulado", fmt_brl(final_real), sub="Saldo real (carryover)", badge=badge)
-
-        st.markdown("### Tabela do fluxo (por dia)")
-        fluxo_tbl_show = fluxo_disp.copy().sort_values("DATA")
-        fluxo_tbl_show = fluxo_tbl_show.rename(columns={"SALDO_REAL": "SALDO_ACUM"})
-        for c in ["ENTRADAS", "SAIDAS", "SALDO_DIA", "SALDO_ACUM"]:
-            fluxo_tbl_show[c] = fluxo_tbl_show[c].apply(fmt_brl)
-        st.dataframe(fluxo_tbl_show[["DATA", "ENTRADAS", "SAIDAS", "SALDO_DIA", "SALDO_ACUM"]], use_container_width=True, hide_index=True)
-
-        st.markdown("<div class='hr'></div>", unsafe_allow_html=True)
-        st.markdown("### Saldo por banco (final do período)")
-        if resumo_banks is None or resumo_banks.empty:
-            st.caption("Sem saldos por banco disponíveis.")
-        else:
-            show = resumo_banks.copy()
-            for c in ["SALDO_INICIAL", "SALDO_MOV", "SALDO_REAL_FINAL"]:
-                show[c] = show[c].apply(fmt_brl)
-            st.dataframe(show, use_container_width=True, hide_index=True)
-
+                conc_tbl = conc_tbl[(conc_tbl["DATA"] >= dt_ini) & (conc_tbl["DATA"] <= dt
 
 elif page.startswith("⏳"):
     st.markdown("<div class='hr'></div>", unsafe_allow_html=True)
