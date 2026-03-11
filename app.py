@@ -1218,13 +1218,21 @@ elif page.startswith("🟨"):
             var_name="Métrica",
             value_name="Valor",
         )
-        melt["Métrica"] = melt["Métrica"].replace({"ENTRADAS": "Entradas", "SAIDAS": "Saídas", "SALDO_DIA": "Saldo do dia"})
+        melt["Métrica"] = melt["Métrica"].replace({
+            "ENTRADAS": "Entradas",
+            "SAIDAS": "Saídas",
+            "SALDO_DIA": "Saldo do dia"
+        })
 
         chart = alt.Chart(melt).mark_line(point=True).encode(
             x=alt.X("DATA:T", title="Data", axis=alt.Axis(format="%d/%m")),
             y=alt.Y("Valor:Q", title="R$"),
             color=alt.Color("Métrica:N", legend=alt.Legend(title="")),
-            tooltip=[alt.Tooltip("DATA:T", title="Data", format="%d/%m/%Y"), "Métrica", alt.Tooltip("Valor:Q", format=",.2f", title="R$")],
+            tooltip=[
+                alt.Tooltip("DATA:T", title="Data", format="%d/%m/%Y"),
+                "Métrica",
+                alt.Tooltip("Valor:Q", format=",.2f", title="R$")
+            ],
         ).properties(height=320)
         st.altair_chart(chart, use_container_width=True)
 
@@ -1243,7 +1251,6 @@ elif page.startswith("🟨"):
             st_kpi("Saldo no período", fmt_brl(saldo), sub="Entradas - Saídas", badge=badge)
 
         with cD:
-            # saldo filtrado = última linha da tabela da aba 7
             saldo_filtro = float(fluxo_disp.sort_values("DATA")["SALDO_ACUM"].iloc[-1])
             badge = ("positivo", "good") if saldo_filtro >= 0 else ("negativo", "bad")
             st_kpi("Saldo acumulado (filtro)", fmt_brl(saldo_filtro), sub="Última linha da tabela", badge=badge)
@@ -1274,7 +1281,6 @@ elif page.startswith("🟨"):
 
         st.stop()
 
-    # fallback automático: calcula pelo histórico + saldo inicial
     ent_hist = df_ent.copy()
     sai_hist = df_sai.copy()
     trf_hist = df_trf.copy()
@@ -1308,7 +1314,11 @@ elif page.startswith("🟨"):
             var_name="Métrica",
             value_name="Valor",
         )
-        melt["Métrica"] = melt["Métrica"].replace({"ENTRADAS": "Entradas", "SAIDAS": "Saídas", "SALDO_DIA": "Saldo do dia"})
+        melt["Métrica"] = melt["Métrica"].replace({
+            "ENTRADAS": "Entradas",
+            "SAIDAS": "Saídas",
+            "SALDO_DIA": "Saldo do dia"
+        })
 
         chart = alt.Chart(melt).mark_line(point=True).encode(
             x=alt.X("DATA:T", title="Data", axis=alt.Axis(format="%d/%m")),
@@ -1342,7 +1352,11 @@ elif page.startswith("🟨"):
         fluxo_tbl_show = fluxo_tbl_show.rename(columns={"SALDO_REAL": "SALDO_ACUM"})
         for c in ["ENTRADAS", "SAIDAS", "SALDO_DIA", "SALDO_ACUM"]:
             fluxo_tbl_show[c] = fluxo_tbl_show[c].apply(fmt_brl)
-        st.dataframe(fluxo_tbl_show[["DATA", "ENTRADAS", "SAIDAS", "SALDO_DIA", "SALDO_ACUM"]], use_container_width=True, hide_index=True)
+        st.dataframe(
+            fluxo_tbl_show[["DATA", "ENTRADAS", "SAIDAS", "SALDO_DIA", "SALDO_ACUM"]],
+            use_container_width=True,
+            hide_index=True
+        )
 
         st.markdown("<div class='hr'></div>", unsafe_allow_html=True)
         st.markdown("### Saldo por banco (final do período)")
@@ -1357,7 +1371,6 @@ elif page.startswith("🟨"):
             for c in ["SALDO_INICIAL", "SALDO_MOV", "SALDO_REAL_FINAL"]:
                 show[c] = show[c].apply(fmt_brl)
             st.dataframe(show, use_container_width=True, hide_index=True)
-
 
 elif page.startswith("⏳"):
     st.markdown("<div class='hr'></div>", unsafe_allow_html=True)
