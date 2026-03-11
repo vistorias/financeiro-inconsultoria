@@ -1950,6 +1950,7 @@ page = st.radio(
     ],
     horizontal=True,
 )
+
 elif page.startswith("💧"):
     st.markdown("<div class='hr'></div>", unsafe_allow_html=True)
     st.markdown("## Fluxo de Caixa")
