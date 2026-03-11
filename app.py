@@ -874,7 +874,8 @@ def get_prev_month_balance_from_dados(
 
     # procurar a coluna do código do mês anterior
     target_col_idx = None
-    for j, v in enumerate(row_codes):
+    for j in range(3, len(row_codes)):  # começa na coluna D
+        v = row_codes[j]
         if str(v).strip() == target_code:
             target_col_idx = j
             break
