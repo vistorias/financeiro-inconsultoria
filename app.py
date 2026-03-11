@@ -1443,8 +1443,8 @@ if conc_tbl is not None and (not conc_tbl.empty):
 
         with cE:
             if saldo_todos is not None:
-            badge = ("positivo", "good") if saldo_todos >= 0 else ("negativo", "bad")
-            st_kpi("Saldo acumulado (todos)", fmt_brl(saldo_todos), sub="Quadro Saldo Acumulado Bancos", badge=badge)
+                badge = ("positivo", "good") if saldo_todos >= 0 else ("negativo", "bad")
+                st_kpi("Saldo acumulado (todos)", fmt_brl(saldo_todos), sub="Quadro Saldo Acumulado Bancos", badge=badge)
 
         st.markdown("### Tabela do fluxo (por dia)")
         fluxo_tbl_show = fluxo_disp.copy().sort_values("DATA")
