@@ -1282,7 +1282,7 @@ def compute_fluxo_caixa(df_ent: pd.DataFrame, df_sai: pd.DataFrame) -> pd.DataFr
     base["SALDO_ACUM"] = base["SALDO_DIA"].cumsum()
     base["YM"] = base["DATA"].apply(to_ym)
     return base
-    def compute_saldo_bancos(
+def compute_saldo_bancos(
     df_ent_all: pd.DataFrame,
     df_sai_all: pd.DataFrame,
     df_trf_all: pd.DataFrame,
