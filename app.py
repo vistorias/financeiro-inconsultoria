@@ -860,7 +860,7 @@ def get_prev_month_balance_from_dados(
     for i in range(len(x)):
         vals = [str(v).strip() for v in x.iloc[i].tolist()]
         vals_up = [_upper(v) for v in vals]
-        if "SICREDI" in vals_up or "NUBANK" in vals_up:
+        if "Sicredi" in vals_up or "Nubank" in vals_up:
             bank_row_idx = i
             break
 
