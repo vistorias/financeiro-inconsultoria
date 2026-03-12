@@ -691,6 +691,128 @@ def parse_saldo_inicial_diario(df_raw: pd.DataFrame) -> pd.DataFrame:
 
     return x[["BANCO", "DATA", "VALOR"]].copy()
 
+def build_fluxo_like_conciliacao(
+    df_ent: pd.DataFrame,
+    df_sai: pd.DataFrame,
+    df_trf: pd.DataFrame,
+    df_saldo_ini_diario: pd.DataFrame,
+    saldo_base_anterior: float,
+    bancos: List[str],
+    ym_focus: str,
+    dt_ini: Optional[date],
+    dt_fim: Optional[date],
+) -> pd.DataFrame:
+    """
+    Replica a lógica da aba 7. Conciliação para o mês selecionado.
+    """
+
+    if not ym_focus:
+        return pd.DataFrame(columns=["DATA", "ENTRADAS", "SAIDAS", "SALDO_DIA", "SALDO_ACUM"])
+
+    ano = int(ym_focus[:4])
+    mes = int(ym_focus[5:7])
+    bancos_upper = [_upper(b) for b in bancos] if bancos else []
+
+    # último dia do mês
+    if mes == 12:
+        prox = date(ano + 1, 1, 1)
+    else:
+        prox = date(ano, mes + 1, 1)
+    ultimo_dia = (prox - timedelta(days=1)).day
+
+    dias = pd.DataFrame({"DIA": list(range(1, ultimo_dia + 1))})
+    dias["DATA"] = dias["DIA"].apply(lambda d: date(ano, mes, int(d)))
+
+    # Entradas (aba 4)
+    ent_day = pd.DataFrame(columns=["DIA", "ENTRADAS_4"])
+    if df_ent is not None and not df_ent.empty:
+        x = df_ent.copy()
+        if bancos_upper and "BANCO" in x.columns:
+            x = x[x["BANCO"].isin(bancos_upper)].copy()
+        x = x[x["YM"] == ym_focus].copy()
+        x["DIA"] = x["DATA"].apply(lambda d: d.day if pd.notna(d) else np.nan)
+        ent_day = (
+            x.groupby("DIA", as_index=False)["VALOR"]
+            .sum()
+            .rename(columns={"VALOR": "ENTRADAS_4"})
+        )
+
+    # Saldo inicial diário (aba 1)
+    saldo_ini_day = pd.DataFrame(columns=["DIA", "ENTRADAS_SALDO_INI"])
+    if df_saldo_ini_diario is not None and not df_saldo_ini_diario.empty:
+        x = df_saldo_ini_diario.copy()
+        if bancos_upper and "BANCO" in x.columns:
+            x = x[x["BANCO"].isin(bancos_upper)].copy()
+        x["YM"] = x["DATA"].apply(to_ym)
+        x = x[x["YM"] == ym_focus].copy()
+        x["DIA"] = x["DATA"].apply(lambda d: d.day if pd.notna(d) else np.nan)
+        saldo_ini_day = (
+            x.groupby("DIA", as_index=False)["VALOR"]
+            .sum()
+            .rename(columns={"VALOR": "ENTRADAS_SALDO_INI"})
+        )
+
+    # Transferências entrando no banco (aba 6)
+    trf_in_day = pd.DataFrame(columns=["DIA", "ENTRADAS_TRF"])
+    trf_out_day = pd.DataFrame(columns=["DIA", "SAIDAS_TRF"])
+
+    if df_trf is not None and not df_trf.empty:
+        x = df_trf.copy()
+        x = x[x["YM"] == ym_focus].copy()
+        x["DIA"] = x["DATA"].apply(lambda d: d.day if pd.notna(d) else np.nan)
+
+        if bancos_upper:
+            xin = x[x["DESTINO"].isin(bancos_upper)].copy() if "DESTINO" in x.columns else pd.DataFrame()
+            xout = x[x["ORIGEM"].isin(bancos_upper)].copy() if "ORIGEM" in x.columns else pd.DataFrame()
+        else:
+            xin = x.copy()
+            xout = x.copy()
+
+        if not xin.empty:
+            trf_in_day = (
+                xin.groupby("DIA", as_index=False)["VALOR"]
+                .sum()
+                .rename(columns={"VALOR": "ENTRADAS_TRF"})
+            )
+
+        if not xout.empty:
+            trf_out_day = (
+                xout.groupby("DIA", as_index=False)["VALOR"]
+                .sum()
+                .rename(columns={"VALOR": "SAIDAS_TRF"})
+            )
+
+    # Saídas (aba 5)
+    sai_day = pd.DataFrame(columns=["DIA", "SAIDAS_5"])
+    if df_sai is not None and not df_sai.empty:
+        x = df_sai.copy()
+        if bancos_upper and "BANCO" in x.columns:
+            x = x[x["BANCO"].isin(bancos_upper)].copy()
+        x = x[x["YM"] == ym_focus].copy()
+        x["DIA"] = x["DATA_REF"].apply(lambda d: d.day if pd.notna(d) else np.nan)
+        sai_day = (
+            x.groupby("DIA", as_index=False)["VALOR"]
+            .sum()
+            .rename(columns={"VALOR": "SAIDAS_5"})
+        )
+
+    fluxo = dias.merge(ent_day, on="DIA", how="left")
+    fluxo = fluxo.merge(saldo_ini_day, on="DIA", how="left")
+    fluxo = fluxo.merge(trf_in_day, on="DIA", how="left")
+    fluxo = fluxo.merge(sai_day, on="DIA", how="left")
+    fluxo = fluxo.merge(trf_out_day, on="DIA", how="left")
+    fluxo = fluxo.fillna(0.0)
+
+    fluxo["ENTRADAS"] = fluxo["ENTRADAS_4"] + fluxo["ENTRADAS_SALDO_INI"] + fluxo["ENTRADAS_TRF"]
+    fluxo["SAIDAS"] = fluxo["SAIDAS_5"] + fluxo["SAIDAS_TRF"]
+    fluxo["SALDO_DIA"] = fluxo["ENTRADAS"] - fluxo["SAIDAS"]
+    fluxo["SALDO_ACUM"] = float(saldo_base_anterior) + fluxo["SALDO_DIA"].cumsum()
+
+    if dt_ini and dt_fim:
+        fluxo = fluxo[(fluxo["DATA"] >= dt_ini) & (fluxo["DATA"] <= dt_fim)].copy()
+
+    return fluxo[["DATA", "ENTRADAS", "SAIDAS", "SALDO_DIA", "SALDO_ACUM"]].copy()
+
 
 def compute_fluxo_caixa(df_ent: pd.DataFrame, df_sai: pd.DataFrame) -> pd.DataFrame:
     ent_day = (
@@ -1528,10 +1650,23 @@ if conc_tbl is not None and (not conc_tbl.empty):
 
         ent_hist = pd.concat([ent_hist, extra_ent], ignore_index=True)
 
-    mv_banks_daily, resumo_banks = compute_saldo_bancos(
-        ent_hist, sai_hist, trf_hist, df_saldo_ini, saldo_base_date
+    saldo_base_filtro = get_prev_month_balance_from_dados(
+        dados_raw=dados_raw,
+        bancos=banco_sel,
+        ym_focus=ym_focus
     )
-    fluxo_disp = build_fluxo_total_from_mv(mv_banks_daily, banco_sel, dt_ini, dt_fim)
+
+    fluxo_disp = build_fluxo_like_conciliacao(
+        df_ent=ent_hist,
+        df_sai=sai_hist,
+        df_trf=trf_hist,
+        df_saldo_ini_diario=saldo_ini_hist,
+        saldo_base_anterior=saldo_base_filtro,
+        bancos=banco_sel,
+        ym_focus=ym_focus,
+        dt_ini=dt_ini,
+        dt_fim=dt_fim,
+    )
 
     if fluxo_disp.empty:
         st.info("Sem dados suficientes para exibir o fluxo de caixa neste filtro.")
