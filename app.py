@@ -782,19 +782,29 @@ def build_fluxo_like_conciliacao(
                 .rename(columns={"VALOR": "SAIDAS_TRF"})
             )
 
-    # Saídas (aba 5)
+    # Saídas (aba 5) — considerar somente PAGAMENTO, igual à Conciliação
     sai_day = pd.DataFrame(columns=["DIA", "SAIDAS_5"])
     if df_sai is not None and not df_sai.empty:
         x = df_sai.copy()
+
         if bancos_upper and "BANCO" in x.columns:
             x = x[x["BANCO"].isin(bancos_upper)].copy()
-        x = x[x["YM"] == ym_focus].copy()
-        x["DIA"] = x["DATA_REF"].apply(lambda d: d.day if pd.notna(d) else np.nan)
-        sai_day = (
-            x.groupby("DIA", as_index=False)["VALOR"]
-            .sum()
-            .rename(columns={"VALOR": "SAIDAS_5"})
-        )
+
+        # Fluxo da conciliação usa apenas saídas pagas
+        if "PAGAMENTO" in x.columns:
+            x = x[x["PAGAMENTO"].notna()].copy()
+            x["YM_PAG"] = x["PAGAMENTO"].apply(to_ym)
+            x = x[x["YM_PAG"] == ym_focus].copy()
+            x["DIA"] = x["PAGAMENTO"].apply(lambda d: d.day if pd.notna(d) else np.nan)
+        else:
+            x = pd.DataFrame(columns=x.columns)
+
+        if not x.empty:
+            sai_day = (
+                x.groupby("DIA", as_index=False)["VALOR"]
+                .sum()
+                .rename(columns={"VALOR": "SAIDAS_5"})
+            )
 
     fluxo = dias.merge(ent_day, on="DIA", how="left")
     fluxo = fluxo.merge(saldo_ini_day, on="DIA", how="left")
