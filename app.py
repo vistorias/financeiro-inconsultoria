@@ -1511,22 +1511,22 @@ if conc_tbl is not None and (not conc_tbl.empty):
                 trf_hist = trf_hist[trf_hist["DESTINO"].isin(bset)].copy()
 
     if saldo_ini_hist is not None and not saldo_ini_hist.empty:
-    extra_ent = saldo_ini_hist.copy()
-    extra_ent["YM"] = extra_ent["DATA"].apply(to_ym)
-    extra_ent["VENCIMENTO"] = pd.NaT
-    extra_ent["CAPTACAO"] = ""
-    extra_ent["CLIENTE"] = "SALDO INICIAL"
-    extra_ent["PLANO_CONTAS"] = "SALDO INICIAL"
-    extra_ent["MEIO"] = ""
-    extra_ent["AREA"] = ""
-    extra_ent["PRODUTO"] = ""
-    extra_ent["DESCRICAO"] = "SALDO INICIAL DIÁRIO"
+        extra_ent = saldo_ini_hist.copy()
+        extra_ent["YM"] = extra_ent["DATA"].apply(to_ym)
+        extra_ent["VENCIMENTO"] = pd.NaT
+        extra_ent["CAPTACAO"] = ""
+        extra_ent["CLIENTE"] = "SALDO INICIAL"
+        extra_ent["PLANO_CONTAS"] = "SALDO INICIAL"
+        extra_ent["MEIO"] = ""
+        extra_ent["AREA"] = ""
+        extra_ent["PRODUTO"] = ""
+        extra_ent["DESCRICAO"] = "SALDO INICIAL DIÁRIO"
 
-    extra_ent = extra_ent[
-        ["DATA", "YM", "VENCIMENTO", "BANCO", "CAPTACAO", "CLIENTE", "PLANO_CONTAS", "MEIO", "AREA", "PRODUTO", "DESCRICAO", "VALOR"]
-    ].copy()
+        extra_ent = extra_ent[
+            ["DATA", "YM", "VENCIMENTO", "BANCO", "CAPTACAO", "CLIENTE", "PLANO_CONTAS", "MEIO", "AREA", "PRODUTO", "DESCRICAO", "VALOR"]
+        ].copy()
 
-    ent_hist = pd.concat([ent_hist, extra_ent], ignore_index=True)
+        ent_hist = pd.concat([ent_hist, extra_ent], ignore_index=True)
 
     mv_banks_daily, resumo_banks = compute_saldo_bancos(
         ent_hist, sai_hist, trf_hist, df_saldo_ini, saldo_base_date
